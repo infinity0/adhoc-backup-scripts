@@ -1,0 +1,5 @@
+# list of paths, one per line
+# comments only allowed at start of line  
+# these will be searched for new or updated config files
+/etc/apache2
+/etc/initramfs-tools

@@ -1,9 +1,9 @@
 # custom backup info
-archive.txt
-current.txt
-current-cfg.txt
+./archive.txt
+./current.txt
+./current-cfg.txt
 
 # backup roots
-archive
-current
+./archive
+./current
 
