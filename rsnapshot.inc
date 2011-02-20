@@ -1,6 +1,4 @@
-# Directories require a trailing slash:         #
-#   right: /home/                               #
-#   wrong: /home                                #
+# Useful common settings
 
 config_version	1.2
 
