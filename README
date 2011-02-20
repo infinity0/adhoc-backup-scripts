@@ -2,7 +2,7 @@ This package assumes it is installed into /root/backup
 
 ## Pre-use
 
-root# aptitude install rsnapshot debsums
+root# aptitude install rsnapshot debsums dlocate
 root# patch -Np0 -r- < ./rsnapshot.diff
 
 ## Use
