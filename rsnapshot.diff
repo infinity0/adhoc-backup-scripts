@@ -1,0 +1,13 @@
+--- /usr/bin/rsnapshot	2010-08-10 14:05:03.529893050 +0100
++++ /usr/bin/rsnapshot	2011-02-20 02:23:30.134409968 +0000
+@@ -508,8 +508,8 @@
+ 	# open the config file
+ 	my $config_file = shift() || $config_file;
+ 	my $CONFIG;
+-	if($config_file =~ /^`.*`$/) {
+-	    open($CONFIG, "$config_file|") ||
++	if($config_file =~ /^`(.*)`$/) {
++	    open($CONFIG, "$1 |") ||
+ 	        bail("Couldn't execute \"$config_file\" to get config information\nAre you sure you have permission?");
+ 	} else {
+ 	    $CONFIG = IO::File->new($config_file)

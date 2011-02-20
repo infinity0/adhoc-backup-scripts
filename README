@@ -1,0 +1,16 @@
+This package assumes it is installed into /root/backup
+
+## Pre-use
+
+root# aptitude install rsnapshot debsums
+root# patch -Np0 -r- < ./rsnapshot.diff
+
+## Use
+
+- make your own versions of the files in ./examples/, and copy them here
+
+- install ./rsnapshot.crontab with `crontab -e`
+  TODO: anacrontabs would be even better!
+
+- symlink ./archive ./current to your backup locations
+  or, edit archive.conf current.conf to your backup locations

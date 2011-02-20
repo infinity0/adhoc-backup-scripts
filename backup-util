@@ -1,0 +1,39 @@
+#!/bin/sh
+PREFIX='#'
+
+get_ref() { eval echo "\$$1"; }
+set_ref() { eval "$1=\"$2\""; }
+append_ref() { set_ref $1 "$(get_ref $1) $2"; }
+
+for_significant_lines() {
+	while read line; do
+		if [ -z "$line" ]; then continue; fi
+		if [ "$line" != "${line#$PREFIX}" ]; then continue; fi
+		"$@" "$line"
+	done
+}
+
+list_ref_from_lines() { set_ref $1 ""; for_significant_lines append_ref $1; }
+
+make_backup_point() { echo "backup	$2	$1"; }
+
+find_config() {
+	find "$@" | grep -vx -F "$(dlocate --filename-only -F /etc)"
+	debsums -ec
+}
+
+subcmd="$1"
+shift
+
+case $subcmd in
+make_backup_points )
+	for_significant_lines make_backup_point "./"
+	;;
+find_updated_configs )
+	list_ref_from_lines FIND_ARGS
+	find_config $FIND_ARGS
+	;;
+*)
+	exit 1
+	;;
+esac

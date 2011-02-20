@@ -1,0 +1,13 @@
+# See `man rsnapshot` for details
+# The "rsnapshot sync" section is especially useful for these entries
+
+RC_CU=/root/backup/current.conf
+RC_AR=/root/backup/archive.conf
+
+45 5 * * *	rsnapshot -c $RC_CU sync && rsnapshot -c $RC_CU daily
+40 5 * * 0	rsnapshot -c $RC_CU weekly
+35 5 1 */3 *	rsnapshot -c $RC_CU quarter
+
+25 6 * * 0	rsnapshot -c $RC_AR sync && rsnapshot -c $RC_AR weekly
+20 6 1 * *	rsnapshot -c $RC_AR monthly
+15 6 1 8 *	rsnapshot -c $RC_AR yearly
