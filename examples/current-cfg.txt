@@ -1,5 +1,4 @@
-# list of paths, one per line
-# comments only allowed at start of line  
-# these will be searched for new or updated config files
+# list of paths, one per line. comments only allowed at start of line
+# we search these for files created or edited relative to what dpkg thinks
 /etc/apache2
 /etc/initramfs-tools

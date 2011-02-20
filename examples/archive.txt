@@ -1,4 +1,4 @@
-# list of paths, one per line
-# comments only allowed at start of line
+# list of paths, one per line. comments only allowed at start of line
+# for large static data that doesn't change often, e.g. media
 /srv/pub/music
 /srv/pub/video
