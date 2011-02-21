@@ -14,3 +14,13 @@ root# patch -Np0 -r- < ./rsnapshot.diff
 
 - symlink ./archive ./current to your backup locations
   or, edit archive.conf current.conf to your backup locations
+
+## Pre-use (apt-pkg)
+
+$ git init pkg-backup && cd pkg-backup
+$ touch packages.txt && git add packages.txt
+$ git commit -m "touch package state"
+
+## Use (apt-pkg)
+
+$ /path/to/apk-pkg c
