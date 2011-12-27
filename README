@@ -1,28 +1,34 @@
-This package assumes it is installed into /root/backup
+# backup-util
+
+Manage backups easily, including automatic detection of system config
+files customised by the user.
 
 ## Pre-use
 
-rsnapshot must be greater than version 1.3.1-2
+Depends: rsnapshot (>= 1.3.1), debsums, dlocate
 
-root# aptitude install rsnapshot debsums dlocate
-root# patch -Np0 -r- < ./rsnapshot.diff
+You may also need to patch rsnapshot:
+- if using upstream 1.3.1, you need to apply [1], [2]
+- if using debian 1.3.1-1, you need to apply [1], [2]
+- if using debian 1.3.1-2 or -3, you need to apply [2]
+
+[1] http://rsnapshot.cvs.sourceforge.net/viewvc/rsnapshot/rsnapshot/rsnapshot-program.pl?r1=1.400&r2=1.401&view=patch
+[2] http://rsnapshot.cvs.sourceforge.net/viewvc/rsnapshot/rsnapshot/rsnapshot-program.pl?r1=1.405&r2=1.406&view=patch
 
 ## Use
 
-- make your own versions of the files in ./examples/, and copy them here
+See `./backup-util` for instructions on use.
 
-- install ./rsnapshot.crontab with `crontab -e`
-  TODO: anacrontabs would be even better!
+# apt-pkg
 
-- symlink ./archive ./current to your backup locations
-  or, edit archive.conf current.conf to your backup locations
+Keeps track of the "important" parts of aptitude package state.
 
-## Pre-use (apt-pkg)
+## Pre-use
 
 $ git init pkg-backup && cd pkg-backup
 $ touch packages.txt && git add packages.txt
 $ git commit -m "touch package state"
 
-## Use (apt-pkg)
+## Use
 
 $ /path/to/apk-pkg c
