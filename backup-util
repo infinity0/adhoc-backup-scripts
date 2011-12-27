@@ -112,18 +112,22 @@ generate_conf() {
 	EOF
 }
 
+get_scheme_path() {
+	echo "$SCRIPT_ROOT/${1%.scheme}.scheme"
+}
+
 subcmd="$1"
 shift
 
 case $subcmd in
 scheme_view )
-	get_backup "${1%.scheme}" "$2"
+	get_backup "$(get_scheme_path "$1")" "$2"
 	;;
 scheme_retain )
-	get_backup_part "${1%.scheme}" "$2" RETAIN | tail -n+2
+	get_backup_part "$(get_scheme_path "$1")" "$2" RETAIN | tail -n+2
 	;;
 scheme_crontab )
-	get_backup_part "${1%.scheme}" "$2" CRONTAB | tail -n+2
+	get_backup_part "$(get_scheme_path "$1")" "$2" CRONTAB | tail -n+2
 	;;
 backup_list_types )
 	list_backup_parts "$1" "$2"
@@ -141,7 +145,7 @@ generate_conf )
 install_backup_spec )
 	backup_root="$(readlink -f "${1-.}")"
 	scheme="$(grep '^scheme: ' "$backup_root/backup.list" | cut '-d ' -f2)"
-	scheme="${scheme%.scheme}.scheme"
+	scheme="$(get_scheme_path "$scheme")"
 	list_backups "$scheme" | while read backup; do
 		tee "$backup_root/$backup.conf" <<-EOF
 		include_conf	\`$SCRIPT_SELF generate_conf "$backup_root" "$scheme" "$backup"\`
