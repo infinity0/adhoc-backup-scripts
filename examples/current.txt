@@ -1,9 +1,0 @@
-# list of paths, one per line, comments only allowed at start of line
-# for small data that changes often, e.g. project work, config files
-/etc/passwd
-/etc/group
-/root/backup
-/usr/local
-/var/spool/cron/crontabs
-/var/mail
-/var/www

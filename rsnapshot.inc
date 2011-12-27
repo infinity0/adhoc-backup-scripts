@@ -4,7 +4,6 @@ config_version	1.2
 
 ## Global settings
 
-snapshot_root	/root/rsnapshot/
 no_create_root	1
 use_lazy_deletes	1
 rsync_numtries	3

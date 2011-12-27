@@ -1,0 +1,24 @@
+scheme: 2tier
+
+== backup: archive
+
+-- all
+/srv
+#/srv/pub/music
+#/srv/pub/video
+
+== backup: current
+
+-- all
+/etc/passwd
+/etc/group
+/usr/local
+/var/spool/cron/crontabs
+/var/mail
+#/var/www
+
+-- non_dpkg_configs
+/etc/apache2
+/etc/initramfs-tools
+
+-- updated_dpkg_configs

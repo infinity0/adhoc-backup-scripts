@@ -1,39 +1,145 @@
 #!/bin/bash
-PREFIX='#'
+SCRIPT_SELF="$(readlink -f "$0")"
+SCRIPT_ROOT="$(dirname "$SCRIPT_SELF")"
 
+
+COMMENT_PREFIX='#'
 significant_lines() {
 	while read line; do
 		if [ -z "$line" ]; then continue; fi
-		if [ "$line" != "${line#$PREFIX}" ]; then continue; fi
+		if [ "$line" != "${line#$COMMENT_PREFIX}" ]; then continue; fi
 		echo "$line"
 	done
 }
 
-make_backup_point() {
+get_section() {
+	# $1: regexp to indicate start of section
+	# $2: regexp to indicate section name, after start-section regexp
+	sed -n -e '/'"$1""$2"'/,/'"$1"'/{
+	  s/'"$1""$2"'/\0/;                       tTHEN;
+	  :ELSE;x;p;x;${/'"$1"'/!p};              bENDIF;
+	  :THEN;$p;
+	  :ENDIF;
+	  };h;'
+	# corner cases all handled :)
+}
+
+list_sections() {
+	local prefix="$1"
+	local matching="${2:-.*}"
+	local suffix="${3:-.*}"
+	sed -n -e 's/'"$prefix"'\('"$matching"'\)'"$suffix"'/\1/gp'
+}
+
+get_backup() {
+	local scheme="$1"
+	local backup="$2"
+	cat "$scheme" \
+	  | get_section '^==\s*backup:\s*' "$backup"
+}
+
+list_backups() {
+	local scheme="$1"
+	cat "$scheme" \
+	  | list_sections '^==\s*backup:\s*'
+}
+
+get_backup_part() {
+	local section="$3"
+	get_backup "$1" "$2" \
+	  | get_section '^--\s*' "$section"
+}
+
+list_backup_parts() {
+	get_backup "$1" "$2" \
+	  | list_sections '^--\s*'
+}
+
+find_all() {
+	cat
+}
+
+find_non_dpkg_configs() {
+	while read x; do
+		find "$x";
+	done | sort -u \
+	  | comm --nocheck-order -23 \
+	      - <(dlocate --filename-only -F '/etc' | grep '^/etc')
+	# dlocate has a bug which prevents regexp from working properly
+	# see #653279
+	# otherwise we would use dlocate '^/etc' instead
+}
+
+find_updated_dpkg_configs() {
+	debsums -ec
+}
+
+make_backup_points() {
 	while read x; do
 		echo "backup	$x	$1";
 	done
 }
 
-find_user_config() {
-	while read x; do
-		find "$x";
-	done | sort -u | comm --nocheck-order -23 - <(dlocate --filename-only -F '/etc' | grep '^/etc')
-	# dlocate has a bug which prevents regexp from working properly
-	# see #
-	# otherwise we would use dlocate '^/etc' instead
+generate_conf() {
+	local backup_root="$1"
+	local scheme="$2"
+	local backup="$3"
+	cat <<-EOF
+	include_conf	$SCRIPT_ROOT/rsnapshot.inc
+	snapshot_root	$backup_root/$backup
+
+	## Intervals
+
+	sync_first	1
+	$(get_backup_part "$scheme" "$backup" RETAIN | tail -n+2)
+
+	## Backup points
+
+	include_conf	\`$SCRIPT_SELF backup_list_points "$backup_root/backup.list" "$backup"\`
+	EOF
 }
 
 subcmd="$1"
 shift
 
 case $subcmd in
-make_backup_points )
-	significant_lines | make_backup_point "./"
+scheme_view )
+	get_backup "${1%.scheme}" "$2"
 	;;
-find_updated_configs )
-	significant_lines | find_user_config
-	debsums -ec
+scheme_retain )
+	get_backup_part "${1%.scheme}" "$2" RETAIN | tail -n+2
+	;;
+scheme_crontab )
+	get_backup_part "${1%.scheme}" "$2" CRONTAB | tail -n+2
+	;;
+backup_list_types )
+	list_backup_parts "$1" "$2"
+	;;
+backup_list_points )
+	list_backup_parts "$1" "$2" | while read section; do
+		get_backup_part "$1" "$2" "$section" \
+		  | tail -n+2 | significant_lines \
+		  | "find_$section" | make_backup_points "./"
+	done
+	;;
+generate_conf )
+	generate_conf "$@"
+	;;
+make_rsnapshot_conf )
+	backup_root="$(readlink -f "${1-.}")"
+	scheme="$(grep '^scheme: ' "$backup_root/backup.list" | cut '-d ' -f2)"
+	scheme="${scheme%.scheme}.scheme"
+	list_backups "$scheme" | while read backup; do
+		tee "$backup_root/$backup.conf" <<-EOF
+		include_conf	\`$SCRIPT_SELF generate_conf "$backup_root" "$scheme" "$backup"\`
+		EOF
+	done
+	echo "testing configs for validity..."
+	list_backups "$scheme" | while read backup; do
+		rsnapshot -c "$backup_root/$backup.conf" -q -t sync || exit $?
+	done || exit $?
+	echo "all configs passed!"
+	# TODO: generate crontab
 	;;
 *)
 	exit 1
