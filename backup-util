@@ -74,10 +74,23 @@ find_updated_dpkg_configs() {
 	debsums -ec
 }
 
-make_backup_points() {
-	while read x; do
-		echo "backup	$x	$1";
+find_nonexistent_to_delete() {
+	while read src; do
+		echo "$src	+rsync_long_args=\"--existing\""
 	done
+}
+
+make_backup_points() {
+	OLDIFS="$IFS"
+	IFS="	"
+	while read src opts; do
+		if [ -n "$opts" ]; then
+			echo "backup	$src	$1	$opts";
+		else
+			echo "backup	$src	$1";
+		fi
+	done
+	IFS="$OLDIFS"
 }
 
 generate_conf() {
