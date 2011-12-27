@@ -1,9 +1,6 @@
-# custom backup info
-./archive.txt
-./current.txt
-./current-cfg.txt
-
-# backup roots
-./archive
-./current
-
+# backup files when installed
+/examples/archive
+/examples/archive.conf
+/examples/current
+/examples/current.conf
+/examples/rsnapshot.crontab

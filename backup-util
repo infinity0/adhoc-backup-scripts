@@ -125,7 +125,7 @@ backup_list_points )
 generate_conf )
 	generate_conf "$@"
 	;;
-make_rsnapshot_conf )
+install_backup_spec )
 	backup_root="$(readlink -f "${1-.}")"
 	scheme="$(grep '^scheme: ' "$backup_root/backup.list" | cut '-d ' -f2)"
 	scheme="${scheme%.scheme}.scheme"
@@ -139,7 +139,34 @@ make_rsnapshot_conf )
 		rsnapshot -c "$backup_root/$backup.conf" -q -t sync || exit $?
 	done || exit $?
 	echo "all configs passed!"
-	# TODO: generate crontab
+	echo "================================================================"
+	echo "File: $backup_root/rsnapshot.crontab"
+	echo "----------------------------------------------------------------"
+	{
+	cat <<-EOF
+	# See \`man rsnapshot\` for details
+	# The "rsnapshot sync" section is especially useful for these entries
+
+	EOF
+	list_backups "$scheme" | while read backup; do
+		echo "RS_CONF=$backup_root/$backup.conf"
+		get_backup_part "$scheme" "$backup" CRONTAB | tail -n+2
+	done
+	} | tee "$backup_root/rsnapshot.crontab"
+	echo "================================================================"
+	read -p "To install this crontab now, copy it into your clipboard then hit Y: [y/N]" x
+	if [ "$x" = "y" -o "$x" = "Y" ]; then
+		crontab -e
+	fi
+	;;
+"")
+	cat <<-EOF
+	To set up your own backup specification, do:
+	1.  customise examples/backup.list
+	2.  save it to a BACKUP_ROOT directory of your choice
+	3.  mkdir \$BACKUP_ROOT/\$backup for each backup in the scheme you chose
+	4.  run $0 install_backup_spec \$BACKUP_ROOT
+	EOF
 	;;
 *)
 	exit 1

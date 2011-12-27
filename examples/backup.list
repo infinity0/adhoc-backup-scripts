@@ -3,22 +3,28 @@ scheme: 2tier
 == backup: archive
 
 -- all
-/srv
-#/srv/pub/music
-#/srv/pub/video
+# all files in these directories
+/srv/pub/music
+/srv/pub/video
 
 == backup: current
 
 -- all
+# all files in these directories
 /etc/passwd
 /etc/group
-/usr/local
+/usr/local/bin
+/usr/local/sbin
 /var/spool/cron/crontabs
 /var/mail
-#/var/www
+/var/www
 
 -- non_dpkg_configs
+# files in these directories that do not appear in dpkg's database
 /etc/apache2
 /etc/initramfs-tools
 
 -- updated_dpkg_configs
+# leave this section empty; it will automatically be populated with
+# config files that are modified from their original package versions
+
