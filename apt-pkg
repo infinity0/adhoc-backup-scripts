@@ -102,6 +102,15 @@ def pkgfile_num_lines(fn):
 		return len(fp.readlines())
 
 
+def pkglist_sort(pkgs, sortby):
+	# assumes sort is stable
+	for k in reversed(sortby):
+		if k.isupper():
+			pkgs.sort(key=ORDERS[k.lower()], reverse=True)
+		else:
+			pkgs.sort(key=ORDERS[k])
+
+
 def git_detect_repo(fn):
 	stdout = check_output(["git", "ls-tree", "HEAD", "--", fn])
 	if stdout: return True
@@ -139,9 +148,7 @@ def apt_pkg_status(fn, header, sortby='n', **extra):
 	with open(fn) as fp:
 		pkgs = map(PkgSummary.FromPlainString, pkgfile_read_section(header, fp))
 
-	# assumes sort is stable
-	for k in reversed(sortby):
-		pkgs.sort(key=ORDERS[k])
+	pkglist_sort(pkgs, sortby)
 	print "\n".join(map(str, pkgs)),
 
 
@@ -199,8 +206,9 @@ if __name__ == "__main__":
 	parser.add_argument("-s", "--sort",
 	  dest="sortby", metavar="KEYS", default="n",
 	  help="sort state output by KEYS[0], KEYS[1],... where each char is one "
-	  "of [n]ame [s]tatus [c]ompoment s[e]ction [p]ackage. NB: section is "
-	  "sorted roughly by semantics, not alphabet; see source code for details")
+	  "of [n]ame [s]tatus [c]ompoment s[e]ction [p]ackage. capitalise the "
+	  "char to reverse. NB: section is sorted roughly by semantics, not "
+	  "alphabet; see source code for details")
 
 	parser.add_argument("subcmd",
 	  help="one of (status|update) or its firstchar", metavar="CMD")
