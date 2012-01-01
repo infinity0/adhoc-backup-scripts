@@ -3,7 +3,7 @@
 import sys
 from pprint import pprint
 from collections import namedtuple
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, check_call, check_output, CalledProcessError
 from time import time
 
 
@@ -44,25 +44,41 @@ def get_section_order(section):
 
 ORDERS = {
 	'n': lambda pkg: pkg.name,
-	'c': lambda pkg: pkg.status,
-	's': lambda pkg: get_section_order(pkg.section_category()),
+	's': lambda pkg: pkg.status,
+	'c': lambda pkg: pkg.component, # TODO: main at top
+	'e': lambda pkg: get_section_order(pkg.section),
 	'p': lambda pkg: ORDER_PRIO.index(pkg.priority),
 }
 
 
-class PkgSummary(namedtuple("PkgSummary", "status,name,section,priority")):
+class PkgSummary(namedtuple(
+  "PkgSummary", "status,name,component,section,priority")):
 
 	def __str__(self):
-		return "%s | %s %s | %s" % (
-		  self.name, self.section,
-		  ORDER_PRIO.index(self.priority), self.status)
+		return "%s : %s/%s %s : %s" % (
+		  self.name, self.component, self.section,
+		  self.priority, self.status)
 
-	def section_category(self):
-		return self.section.split("/")[-1]
+	@classmethod
+	def FromPlainString(cls, s):
+		args = s.split()
+		if len(args) == 5:
+			return cls(*args)
+		elif len(args) == 4:
+			c, s = PkgSummary.parse_section_string(args[2])
+			return cls(args[0], args[1], c, s, args[3])
+		else:
+			raise ValueError()
+
+	@staticmethod
+	def parse_section_string(s, default_cmpt="main"):
+		component, sep, section = s.partition("/")
+		if not sep: return default_cmpt, component
+		else: return component, section
 
 
-def print_err(s):
-	print >>sys.stderr, s
+def print_err(s, fp=sys.stderr):
+	print >>fp, s
 
 
 def pkgfile_read_section(header, lines):
@@ -81,47 +97,55 @@ def pkgfile_read_section(header, lines):
 	return sectlines
 
 
-def pkgfile_parse_lines(lines):
-	return (PkgSummary(*line.split()) for line in lines)
+def pkgfile_num_lines(fn):
+	with open(fn) as fp:
+		return len(fp.readlines())
 
 
-def git_detect_repo(fn=PKGFILE_DEFAULT):
-	cmdline = "git ls-tree HEAD --".split() + [fn]
-	proc = Popen(cmdline, stdout=PIPE)
-	stdout, stderr = proc.communicate()
-	retcode = proc.wait()
-	if stdout:
-		return True
-	else:
-		print_err("git is not tracking %s in the current repo." % fn)
-		print_err("if this is a new repo and you intend to use it to track package state, ")
-		print_err("please touch that file and commit it, then run this command again.")
-		return False
+def git_detect_repo(fn):
+	stdout = check_output(["git", "ls-tree", "HEAD", "--", fn])
+	if stdout: return True
+	print_err("git is not tracking %s in the current repo." % fn)
+	print_err("if you intend to use this directory to track package state, ")
+	print_err("please first run the 'init' subcommand of this program.")
+	return False
 
 
 def aptitude_search(pattern, fp):
 	cmdline = ["aptitude", "search", "--disable-columns", "-F", "%c %p %s %P",
 	           pattern]
-	proc = Popen(cmdline, stdout=fp)
-	proc.communicate()
-	retcode = proc.wait()
-	return retcode
+	check_call(cmdline, stdout=fp)
 
 
-def apt_pkg_info(header, sortby='n', fn=PKGFILE_DEFAULT, **extra):
+def apt_pkg_init(fn):
+	try:
+		stdout = check_output("git", "rev-parse", "--show-prefix")
+		if not stdout or stdout.strip == ".":
+			print_err("abort: already at top-level of existing git repo")
+			return 1
+		raise ValueError
+	except (CalledProcessError, ValueError):
+		check_call(["git", "init"])
+		open(fn, 'w').close()
+		check_call(["git", "add", fn])
+		check_call(["git", "commit", "-m", "touch package state"])
+		return 0
+
+
+def apt_pkg_status(fn, header, sortby='n', **extra):
+	if not git_detect_repo(fn): return 1
+
 	print "%s:" % header
 	with open(fn) as fp:
-		lines = fp.readlines()
+		pkgs = map(PkgSummary.FromPlainString, pkgfile_read_section(header, fp))
 
-	pkgs = list(pkgfile_parse_lines(pkgfile_read_section(header, lines)))
-	for k in list(sortby).__reversed__():
+	# assumes sort is stable
+	for k in reversed(sortby):
 		pkgs.sort(key=ORDERS[k])
+	print "\n".join(map(str, pkgs)),
 
-	print "\n".join("%s" % (p,) for p in pkgs),
 
-
-def apt_pkg_commit(fn=PKGFILE_DEFAULT, **extra):
-
+def apt_pkg_commit(fn, **extra):
 	if not git_detect_repo(fn): return 1
 
 	with open(fn, 'w') as fp:
@@ -132,28 +156,33 @@ def apt_pkg_commit(fn=PKGFILE_DEFAULT, **extra):
 			print >>fp, ""
 			fp.flush()
 
-	if Popen(["git", "diff", "--quiet"]).wait() == 0:
+	try:
+		check_call(["git", "diff", "--quiet"])
 		print_err("no changes from last time, skipping commit")
 		return 0
+	except CalledProcessError:
+		# running --exit-code or --quiet skips the pager, so we run it again here
+		check_call(["git", "diff"])
+		r = raw_input("commit changes? [n] ")
+		if r != "y": return 1
+		check_call(["git", "add", fn])
+		check_call(["git", "commit", "-m", "package state at %s" % int(time())])
 
-	# running --exit-code or --quiet skips the pager, so we run it again here
-	Popen(["git", "diff"]).wait()
-	r = raw_input("commit changes? [n] ")
-	if r != "y": return 1
-	Popen(["git", "add", fn]).wait()
-	Popen(["git", "commit", "-m", "package state at %s" % int(time())]).wait()
 
+def main(subcmd="s", *args, **opts):
 
-def main(subcmd="i", *args, **opts):
+	fn = opts.pop("fn", PKGFILE_DEFAULT)
 
 	if subcmd == "h" or subcmd == "help":
 		print_err("sorry, not implemented yet; in the meantime see --help")
 		return 1
-	elif subcmd == "i" or subcmd == "info":
+	elif subcmd == "i" or subcmd == "init":
+		return apt_pkg_init(fn)
+	elif subcmd == "s" or subcmd == "status":
 		header = PKGFILE_HEADERS['i'][0] if not args else get_header(args[0])
-		return apt_pkg_info(header, **opts)
-	elif subcmd == "c" or subcmd == "commit":
-		return apt_pkg_commit(**opts)
+		return apt_pkg_status(fn, header, **opts)
+	elif subcmd == "u" or subcmd == "update":
+		return apt_pkg_commit(fn, **opts)
 	else:
 		raise SyntaxError("unsupported command: %s" % subcmd)
 
@@ -164,16 +193,17 @@ if __name__ == "__main__":
 
 	# TODO make separate ArgumentParser for each subcmd, and move subcmd
 	# specific options (e.g. -s) there
-	parser.add_argument("-f", "--file", dest="fn", default="packages.txt",
-	  help="use FILE (default packages.txt)", metavar="FILE")
-	parser.add_argument("-s", "--sort", dest="sortby", default="n",
-	  help="sort info output by KEYS[0], KEYS[1],... where each char is one "
-	  "of [n]ame [c]status [s]ection [p]ackage. nb: section is sorted roughly "
-	  "by semantics rather than alphabet; see source code for details",
-	  metavar="KEYS")
+	parser.add_argument("-f", "--file",
+	  dest="fn", metavar="FILE", default="packages.txt",
+	  help="use FILE (default packages.txt)")
+	parser.add_argument("-s", "--sort",
+	  dest="sortby", metavar="KEYS", default="n",
+	  help="sort state output by KEYS[0], KEYS[1],... where each char is one "
+	  "of [n]ame [s]tatus [c]ompoment s[e]ction [p]ackage. NB: section is "
+	  "sorted roughly by semantics, not alphabet; see source code for details")
 
 	parser.add_argument("subcmd",
-	  help="one of (info|update) or its firstchar", metavar="CMD")
+	  help="one of (status|update) or its firstchar", metavar="CMD")
 	parser.add_argument("args", nargs="*",
 	  help="see `%(prog)s help CMD' for details", metavar="ARGS")
 
