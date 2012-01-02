@@ -51,6 +51,25 @@ ORDERS = {
 }
 
 
+class DiffSpec(namedtuple(
+  "DiffSpec", "diff,item")):
+	GET_ITEM = lambda d: d.item
+	GET_DIFF = lambda d: d.diff
+
+	def __str__(self):
+		return self.diff + str(self.item)
+
+	@classmethod
+	def FromDiffLine(cls, s):
+		return cls(s[0], s[1:])
+
+	@classmethod
+	def map(cls, it, f):
+		if not it: return []
+		diffs, items = zip(*it)
+		return map(cls._make, zip(diffs, map(f, items)))
+
+
 class PkgSummary(namedtuple(
   "PkgSummary", "status,name,component,section,priority")):
 
@@ -81,20 +100,21 @@ def print_err(s, fp=sys.stderr):
 	print >>fp, s
 
 
-def pkgfile_read_section(header, lines):
-	sectlines = []
+def pkgfile_read_section(header, items, line_ex=lambda x: x):
+	sectitems = []
 	started = False
 
-	for line in lines:
+	for item in items:
+		line = line_ex(item)
 		if line == "%s:\n" % header:
 			started = True
 			continue
 
 		if not started: continue
 		if not line.rstrip(): break
-		sectlines.append(line)
+		sectitems.append(item)
 
-	return sectlines
+	return sectitems
 
 
 def pkgfile_num_lines(fn):
@@ -102,13 +122,13 @@ def pkgfile_num_lines(fn):
 		return len(fp.readlines())
 
 
-def pkglist_sort(pkgs, sortby):
+def pkglist_sort(pkgs, sortby, pkg_ex=lambda x: x):
 	# assumes sort is stable
 	for k in reversed(sortby):
 		if k.isupper():
-			pkgs.sort(key=ORDERS[k.lower()], reverse=True)
+			pkgs.sort(key=lambda x: ORDERS[k.lower()](pkg_ex(x)), reverse=True)
 		else:
-			pkgs.sort(key=ORDERS[k])
+			pkgs.sort(key=lambda x: ORDERS[k](pkg_ex(x)))
 
 
 def git_detect_repo(fn):
@@ -152,6 +172,20 @@ def apt_pkg_status(fn, header, sortby='n', **extra):
 	print "\n".join(map(str, pkgs)),
 
 
+def apt_pkg_diff(fn, header, sortby='n', change='+-', **extra):
+	num = pkgfile_num_lines(fn)
+	proc1 = Popen(["git", "diff", "-U%d" % num, fn], stdout=PIPE)
+	proc2 = Popen(["sed", "-e", "1,/^@@/d"], stdout=PIPE, stdin=proc1.stdout)
+
+	items = map(DiffSpec.FromDiffLine, proc2.stdout)
+	items = pkgfile_read_section(header, items, DiffSpec.GET_ITEM)
+	items = DiffSpec.map(items, PkgSummary.FromPlainString)
+	items = filter(lambda d: d.diff in change, items)
+
+	pkglist_sort(items, sortby, DiffSpec.GET_ITEM)
+	print "\n".join(map(str, items))
+
+
 def apt_pkg_commit(fn, **extra):
 	if not git_detect_repo(fn): return 1
 
@@ -188,6 +222,9 @@ def main(subcmd="s", *args, **opts):
 	elif subcmd == "s" or subcmd == "status":
 		header = PKGFILE_HEADERS['i'][0] if not args else get_header(args[0])
 		return apt_pkg_status(fn, header, **opts)
+	elif subcmd == "d" or subcmd == "diff":
+		header = PKGFILE_HEADERS['i'][0] if not args else get_header(args[0])
+		return apt_pkg_diff(fn, header, **opts)
 	elif subcmd == "u" or subcmd == "update":
 		return apt_pkg_commit(fn, **opts)
 	else:
@@ -209,6 +246,10 @@ if __name__ == "__main__":
 	  "of [n]ame [s]tatus [c]ompoment s[e]ction [p]ackage. capitalise the "
 	  "char to reverse. NB: section is sorted roughly by semantics, not "
 	  "alphabet; see source code for details")
+	parser.add_argument("-c", "--change",
+	  dest="change", metavar="CHANGE", default="+-",
+	  help="filter diff output by type of change: [ ]unchanged, "
+	  "[+]insertion [-]deletion, default is +-")
 
 	parser.add_argument("subcmd",
 	  help="one of (status|update) or its firstchar", metavar="CMD")
