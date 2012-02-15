@@ -32,6 +32,7 @@ info for all files/dirs tracked by git in the repository.
 -r,  --read         Reads perms/etc from working dir into a .gitmeta file
 -s,  --stdout       Output to stdout instead of .gitmeta
 -d,  --diff         Show unified diff of perms file (XOR with --stdout)
+-n,  --names        Use user/group names instead of numeric ids
 
 ---------------------------------Write Mode------------------------------------
 -w,  --write        Modify perms/etc in working dir to match the .gitmeta file
@@ -39,7 +40,7 @@ info for all files/dirs tracked by git in the repository.
 
 \n";
 
-my ($stdout, $showdiff, $verbose, $read_mode, $write_mode);
+my ($stdout, $showdiff, $verbose, $read_mode, $write_mode, $use_names);
 
 if ((@ARGV < 0) || !GetOptions(
 			       "stdout",         \$stdout,
@@ -47,6 +48,7 @@ if ((@ARGV < 0) || !GetOptions(
 			       "read",           \$read_mode,
 			       "write",          \$write_mode,
 			       "verbose",        \$verbose,
+			       "names",          \$use_names,
 			      )) { die $usage; }
 die $usage unless ($read_mode xor $write_mode);
 
@@ -59,16 +61,14 @@ if ($write_mode) {
     open (IN, "<$gitmeta") or die "Could not open $gitmeta for reading: $!\n";
     while (defined ($_ = <IN>)) {
 	chomp;
-	if (/^(.*)  mode=(\S+)\s+uid=(\d+)\s+gid=(\d+)/) {
+	if (/^(.*)  mode=(\S+)\s+uid=([\w.-]+)\s+gid=([\w.-]+)/) {
 	    # Compare recorded perms to actual perms in the working dir
 	    my ($path, $mode, $uid, $gid) = ($1, $2, $3, $4);
+	    $uid =~ /^\d+$/ or $uid = getpwnam($uid);
+	    $gid =~ /^\d+$/ or $gid = getgrnam($gid);
 	    my $fullpath = $topdir . $path;
 	    my (undef,undef,$wmode,undef,$wuid,$wgid) = lstat($fullpath);
 	    $wmode = sprintf "%04o", $wmode & 07777;
-	    if ($mode ne $wmode) {
-		$verbose && print "Updating permissions on $path: old=$wmode, new=$mode\n";
-		chmod oct($mode), $fullpath;
-	    }
 	    if ($uid != $wuid || $gid != $wgid) {
 		if ($verbose) {
 		    # Print out user/group names instead of uid/gid
@@ -84,6 +84,10 @@ if ($write_mode) {
 		    print "Updating uid/gid on $path: old=$wpwname/$wgrpname, new=$pwname/$grpname\n";
 		}
 		chown $uid, $gid, $fullpath;
+	    }
+	    if ($mode ne $wmode) {
+		$verbose && print "Updating permissions on $path: old=$wmode, new=$mode\n";
+		chmod oct($mode), $fullpath;
 	    }
 	}
 	else {
@@ -203,6 +207,10 @@ sub printstats {
     $path =~ s/@/\@/g;
     my (undef,undef,$mode,undef,$uid,$gid) = lstat($path);
     $path =~ s/%/\%/g;
+    if ( $use_names ) {
+        $uid = getpwuid($uid);
+        $gid = getgrgid($gid);
+    }
     if ($stdout) {
 	print $path;
 	printf "  mode=%04o  uid=$uid  gid=$gid\n", $mode & 07777;
