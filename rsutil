@@ -1,4 +1,8 @@
 #!/bin/bash
+# Configure rsnapshot in a more advanced and concise way.
+#
+# See examples/backup.list for an example config.
+
 SCRIPT_SELF="$(readlink -f "$0")"
 SCRIPT_ROOT="$(dirname "$SCRIPT_SELF")"
 
@@ -181,8 +185,8 @@ install_backup_spec )
 	To set up your own backup specification, do:
 	1.  customise examples/backup.list
 	2.  save it to a BACKUP_ROOT directory of your choice
-	3.  mkdir \$BACKUP_ROOT/\$backup for each backup in the scheme you chose
-	4.  run $0 install_backup_spec \$BACKUP_ROOT
+	3.  'mkdir \$BACKUP_ROOT/\$backup' for each backup in the scheme you chose
+	4.  run '$0 install_backup_spec \$BACKUP_ROOT'
 	EOF
 	;;
 *)

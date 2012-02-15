@@ -21,7 +21,7 @@ See `./backup-util` for instructions on use.
 
 # apt-pkg
 
-Keeps track of the "important" parts of aptitude package state.
+Keeps track of the "interesting" parts of aptitude package state.
 
 ## Pre-use
 

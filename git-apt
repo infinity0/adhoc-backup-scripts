@@ -1,10 +1,21 @@
-#!/usr/bin/python2.7
+#!/usr/bin/python
+"""
+Store "interesting" aptitude package state under git.
+
+Requires python 2.7.
+
+Use the "init" and "update" subcommands for a demo.
+"""
+# TODO: make the "diff" subcommand able to take arguments
+
 
 import sys
-from pprint import pprint
 from collections import namedtuple
 from subprocess import Popen, PIPE, check_call, check_output, CalledProcessError
 from time import time
+
+if sys.version_info < (2, 7):
+    raise "requires python 2.7"
 
 
 PKGFILE_MAGIC = "package state"
@@ -233,7 +244,7 @@ def main(subcmd="s", *args, **opts):
 
 if __name__ == "__main__":
 	from argparse import ArgumentParser
-	parser = ArgumentParser(description="query or update the apt-pkg file")
+	parser = ArgumentParser(description="query or update the state file")
 
 	# TODO make separate ArgumentParser for each subcmd, and move subcmd
 	# specific options (e.g. -s) there
