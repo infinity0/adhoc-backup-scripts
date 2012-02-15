@@ -1,0 +1,397 @@
+#!/bin/sh
+# Transparently mirror files on a system into a git repo.
+#
+# The script provides an alternate view of (a user-specified subset of) a system
+# inside a git repo - i.e. writes to either location show up immediately at the
+# other location. This is done via "bind mounts" - see mount(8) for details.
+#
+# etckeeper wasn't enough for my purposes:
+# - tracked too many files by default, with no easy way to ignore most of them
+#   - e.g. I really don't care about /etc/rc*.d
+#   - I also don't care about config changes due to package upgrades
+# - no way to track files outside of /etc
+# - no way to put the repo somewhere other than /etc/.git
+# - forced to run as superuser, with everything under one repo
+#
+# more advanced use case that etckeeper also can't handle:
+# - public config in a repo owned by a normal user
+#   - you can share this to others for backup/review
+# - private config (e.g. passwords) in a repo owned by root
+#
+# usage example:
+#
+# # to set up gbk on your system
+# $ git config alias.meta "!<path/to/setgitperms.pl> -n"
+#
+# # to backup
+# $ git init && gbk init
+# $ gbk track /etc/apache2/sites-available && gbk bind
+# $ git add . && git commit
+#
+# # to restore
+# $ git clone <url> && gbk init
+# $ gbk install
+
+
+ERR_HOST_NOT_DIR=14
+ERR_BIND_NOT_FILE=15
+ERR_MTAB_SYMLINK=16
+ERR_REPO_NOT_GBK=17
+ERR_BOUND_INCOMPLETE=18
+ERR_NO_TARGET_OR_SOURCE=20
+ERR_BINDPOINT_L_NOTSUPPORTED=23
+ERR_BINDPOINT_NOT_FLD=24
+ERR_BINDPOINT_TYPE_MISMATCH=25
+ERR_SOURCE_IN_HOST=26
+ERR_SOURCE_TRAVERSES_LINKS=27
+ERR_SOURCE_ALREADY_DEFINED=28
+ERR_DUPES_BIND=32
+ERR_DUPES_MTAB=33
+ERR_GIT_META_NOT_FOUND=36
+
+HOST=${HOST:-.}
+HOST_ABS=$(readlink -f "$HOST")
+HOST_BIND="$HOST/.bind"
+TMP_BIND="$HOST/.bind.tmp"
+TMP_MTAB="$HOST/.mtab.tmp"
+
+# clean up temp files
+trap 'rm -f '"$TMP_BIND"' '"$TMP_MTAB" EXIT INT TERM
+set -o errexit
+
+
+pre_test() {
+	if [ ! -d "$HOST_ABS" ]; then
+		echo >&2 "not a directory: $HOST_ABS"
+		exit $ERR_HOST_NOT_DIR
+	fi
+
+	if [ "/proc/mounts" = "$(readlink /etc/mtab)" ]; then
+		cat >&2 <<-EOF
+		/etc/mtab is a symlink to /proc/mounts. This means bind-mount information isn't
+		easily available. To fix this, please:
+
+		- umount all current bind-mounts (ones you manually set up with mount --bind)
+		- $ sudo rm /etc/mtab && sudo cat /proc/mounts | sudo tee /etc/mtab
+		- re-mount all previous bind-mounts
+
+		See mount(8) for details on what this does exactly, in particular the section on
+		"The /etc/fstab, /etc/mtab and /proc/mounts files."
+		EOF
+		exit $ERR_MTAB_SYMLINK
+	fi
+
+	if ! grep -Rq "git meta" "$(git rev-parse --git-dir)/hooks"; then
+		echo >&2 "not a gbk-enabled git repo. run $0 init to fix this."
+		exit $ERR_REPO_NOT_GBK
+	fi
+}
+
+sort_bind() {
+	sort -k1 "$@" <"$HOST_BIND"
+}
+
+p_with_bind() {
+	while read source; do
+		"$@" "$source"
+	done
+}
+
+p_with_mtab() {
+	while read source target mtype opts dump pass; do
+		if ( IFS=","; is_bind_mount $opts ) && \
+		  [ "$target" != "${target#$HOST_ABS/}" ]; then
+			"$@" "$source" "$target" "$mtype" "$opts" "$dump" "$pass"
+		fi
+	done
+}
+
+is_bind_mount() {
+	while [ $# -gt 0 ]; do
+		if [ "$1" = "bind" ]; then return 0; fi
+		shift
+	done
+	return 1
+}
+
+with_bind() { p_with_bind "$@" <"$HOST_BIND"; }
+bind_get_source() { echo "$1"; }
+
+bind_source_apply() {
+	local p1="$1"
+	shift
+	"$p1" "$1"
+}
+
+with_mtab() { p_with_mtab "$@" </etc/mtab; }
+mtab_get_source() { echo "$1"; }
+
+mtab_target_for_source() {
+	local source="$1"
+	shift
+	if [ "$source" = "$1" ]; then echo "$2"; fi;
+}
+
+print_dupes() {
+	# assumes $1 is sorted already
+	sort -u "$1" | comm -13 - "$1"
+}
+
+is_bound() {
+	if [ ! -f "$HOST_BIND" ]; then
+		echo >&2 "not a file: $HOST_BIND"
+		exit $ERR_BIND_NOT_FILE
+	fi
+	with_bind bind_get_source | sort > "$TMP_BIND"
+	with_mtab mtab_get_source | sort > "$TMP_MTAB"
+	if [ -n "$(print_dupes $TMP_BIND)" ]; then
+		echo "duplicate entries in bind: "
+		print_dupes "$TMP_BIND"
+		exit $ERR_DUPES_BIND
+	fi
+	if [ -n "$(print_dupes $TMP_MTAB)" ]; then
+		echo "duplicate entries in mtab: "
+		print_dupes "$TMP_MTAB"
+		exit $ERR_DUPES_MTAB
+	fi
+	if diff -q "$TMP_BIND" "$TMP_MTAB" >/dev/null; then
+		return 0
+	elif [ ! -s "$TMP_MTAB" ]; then
+		return 1
+	else
+		echo "incomplete bind state. either mount all of (1) or umount all of (2) and (3):"
+		echo
+		echo "(1) defined in bind file but not present in mtab:"
+		comm -23 "$TMP_BIND" "$TMP_MTAB" | while read source; do
+			echo "$source	to-be-mounted on $HOST_ABS$source"
+		done
+		echo
+		echo "(2) present in mtab but not defined in bind file:"
+		comm -13 "$TMP_BIND" "$TMP_MTAB" | while read source; do
+			echo -n "$source	currently-mounted on "
+			with_mtab mtab_target_for_source "$source"
+		done
+		echo
+		echo "(3) present in mtab *and* defined in bind file:"
+		comm -12 "$TMP_BIND" "$TMP_MTAB" | while read source; do
+			echo -n "$source	currently-mounted on "
+			with_mtab mtab_target_for_source "$source"
+		done
+		exit $ERR_BOUND_INCOMPLETE
+	fi
+}
+
+file_type() {
+	if [ ! -e "$1" ]; then echo "!"; return; fi
+	case $(stat -c %A "$1") in
+	-*)	echo "f";;
+	l*)	echo "l";;
+	d*)	echo "d";;
+	*)	echo >&2 "not a directory or file or symlink: $origin"
+		exit $ERR_BINDPOINT_NOT_FLD
+		;;
+	esac
+}
+
+ensure_mirror() {
+	# assumes origin exists
+	local origin="$1"
+	local mirror="$2"
+	local sudo="$3"
+	local origin_t=$(file_type "$origin")
+	local mirror_t=$(file_type "$mirror")
+	case "$origin_t$mirror_t" in
+	l?)	err_symlink_not_supported "$origin";;
+	?l)	err_symlink_not_supported "$mirror";;
+	ff)	return ;;
+	dd)	return ;;
+	f!)
+		$sudo mkdir -p "$(dirname "$mirror")"
+		$sudo touch "$mirror"
+		;;
+	d!)
+		$sudo mkdir -p "$mirror"
+		;;
+	*)	echo >&2 "mismatching filetypes:"
+		echo >&2 "$origin_t $origin"
+		echo >&2 "$mirror_t $mirror"
+		exit $ERR_BINDPOINT_TYPE_MISMATCH
+	esac
+}
+
+err_symlink_not_supported() {
+	echo >&2 "currently we do not support tracking symlinks because mount(8) does not support "
+	echo >&2 "bind-mount on symlinks - it transparently dereferences it to the target. this "
+	echo >&2 "is their bug and hopefully will be resolved in the future. offending file: "
+	echo >&2 "$1"
+	echo >&2 "a workaround is to track the parent directory, and git-add only the symlink."
+	exit $ERR_BINDPOINT_L_NOTSUPPORTED
+}
+
+do_bind() {
+	local source="$1"
+	local target="$HOST/$source"
+	if [ -e "$target" ]; then
+		ensure_mirror "$HOST/$source" "$source" sudo
+	elif [ -e "$source" ]; then
+		ensure_mirror "$source" "$HOST/$source"
+	else
+		echo >&2 "neither source nor target exist:"
+		echo >&2 "$source"
+		echo >&2 "$target"
+		exit $ERR_NO_TARGET_OR_SOURCE
+	fi
+	sudo mount -B "$source" "$target"
+}
+
+do_unbind() {
+	local source="$1"
+	local target="$HOST/$source"
+	sudo umount "$target"
+}
+
+git_install_hook() {
+	if [ -e "$1/$2" ]; then
+		echo "git hook $2 already exists; please incorporate the following into it:"
+		echo "-- $1/$2"
+		cat
+		echo "-- EOF"
+	else
+		cat > "$1/$2"
+		chmod +x "$1/$2"
+	fi
+}
+
+git_install_meta_r_hook() {
+	cat << EOF | git_install_hook "$@"
+#!/bin/sh
+if git config --get alias.meta >/dev/null; then
+	SUBDIRECTORY_OK=1 . git-sh-setup
+	cd_to_toplevel
+	require_work_tree
+	git meta -r
+	echo "lol"
+	for host_bind in \$(grep -o -P '(^|.*/).bind\s' ".gitmeta"); do
+		while read source ; do
+			echo "\$(dirname "\$host_bind")/\$source"
+		done <"\$host_bind"
+	done | sed -e 's|^\./\+||g' | sort -u | grep -v '\.' \
+	  | grep -F -f- ".gitmeta" > ".gitmeta.new"
+	mv ".gitmeta.new" ".gitmeta"
+	git add ".gitmeta"
+fi
+EOF
+}
+
+git_install_meta_w_hook() {
+	cat << EOF | git_install_hook "$@"
+#!/bin/sh
+if git config --get alias.meta >/dev/null; then
+	git meta -w
+fi
+EOF
+}
+
+gbk_track() {
+	touch "$HOST_BIND"
+	local was_bound=false
+	if is_bound; then
+		was_bound=true
+		gbk_unbind
+	fi
+	# TODO: prevent when a parent of $source already exists
+	# TODO: prevent when a child of $source already exists, or give
+	# option to remove child
+	local source="$(readlink -f "$(dirname "$2")")/$(basename "$2")"
+	if [ "$source" != "$2" ]; then
+		echo >&2 "source traverses symlinks: $source"
+		echo >&2 "we only store canonical paths or the symlink itself"
+		exit $ERR_SOURCE_TRAVERSES_LINKS
+	elif [ "$source" != "${source#$HOST_ABS/}" ]; then
+		echo >&2 "source inside host: $source, $HOST_ABS"
+		exit $ERR_SOURCE_IN_HOST
+	elif with_bind bind_get_source | grep -qxF "$source"; then
+		echo >&2 "source already defined in bind file: $source"
+		exit $ERR_SOURCE_ALREADY_DEFINED
+	elif [ -h "$source" ]; then
+		err_symlink_not_supported "$source"
+	fi
+	echo "$source" >> "$HOST_BIND"
+	sort_bind -o "$HOST_BIND"
+	if $was_bound; then
+		gbk_bind
+	fi
+}
+
+gbk_unbind() {
+	if is_bound; then
+		sort_bind -r | p_with_bind bind_source_apply do_unbind
+	fi
+}
+
+gbk_bind() {
+	if ! is_bound; then
+		sort_bind | p_with_bind bind_source_apply do_bind
+	fi
+}
+
+gbk_status() {
+	if is_bound; then
+		echo "BOUND on '$HOST'"
+	else
+		echo "NOT BOUND on '$HOST'"
+	fi
+}
+
+gbk_init() {
+	local h="$(git rev-parse --git-dir)/hooks"
+	if ! git config --get alias.meta > /dev/null; then
+		echo >&2 "you need to setup a git alias 'meta' to point to the setgitperms.pl script. "
+		echo >&2 "note: you are advised to use the -n option, which saves user/group names "
+		echo >&2 "rather than uid/gid."
+		exit $ERR_GIT_META_NOT_FOUND
+	fi
+	git_install_meta_r_hook "$h" pre-commit
+	git_install_meta_w_hook "$h" post-checkout
+	git_install_meta_w_hook "$h" post-merge
+}
+
+gbk_install() {
+	gbk_bind
+	sudo git checkout .
+	local git_meta="$(git config --get alias.meta)"
+	sudo ${git_meta#!} -w
+	git checkout .  # re-init index with user's own perms
+}
+
+subcmd="$1"
+shift
+
+case $subcmd in
+init)
+	"gbk_$subcmd" "$@"
+	;;
+status|track|untrack|bind|unbind|install)
+	pre_test
+	"gbk_$subcmd" "$@"
+	;;
+help)
+	cat <<EOF
+Usage: [<VAR>=<value>] $0 <subcmd> [<args>]
+
+subcommands (git repo):
+init                set up this repo as a gbk repo (add hooks, etc)
+install             checkout files to / and set correct permissions.
+
+subcommands (mirror):
+status              print the bound status of the mirror
+track <source>      add a dir/file to the mirror
+untrack <source>    remove a dir/file from the mirror (TODO implement this)
+bind                add bind mounts for the mirror's contents
+unbind              remove bind mounts for the mirror's contents
+
+environment variables:
+HOST                path to the root of the mirror (default .)
+EOF
+	;;
+esac
