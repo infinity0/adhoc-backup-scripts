@@ -270,13 +270,11 @@ if git config --get alias.meta >/dev/null; then
 	cd_to_toplevel
 	require_work_tree
 	git meta -r
-	echo "lol"
 	for host_bind in \$(grep -o -P '(^|.*/).bind\s' ".gitmeta"); do
 		while read source ; do
 			echo "\$(dirname "\$host_bind")/\$source"
 		done <"\$host_bind"
-	done | sed -e 's|^\./\+||g' | sort -u | grep -v '\.' \
-	  | grep -F -f- ".gitmeta" > ".gitmeta.new"
+	done | sed -e 's|^\./\+||g' | sort -u | grep -vxF '.' | grep -F -f- ".gitmeta" > ".gitmeta.new"
 	mv ".gitmeta.new" ".gitmeta"
 	git add ".gitmeta"
 fi
