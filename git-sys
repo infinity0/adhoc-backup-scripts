@@ -48,6 +48,7 @@ ERR_SOURCE_ALREADY_DEFINED=28
 ERR_DUPES_BIND=32
 ERR_DUPES_MTAB=33
 ERR_GIT_META_NOT_FOUND=36
+ERR_PERL_LCHOWN_NOT_FOUND=37
 
 HOST=${HOST:-.}
 HOST_ABS=$(readlink -f "$HOST")
@@ -344,10 +345,13 @@ gbk_status() {
 gbk_init() {
 	local h="$(git rev-parse --git-dir)/hooks"
 	if ! git config --get alias.meta > /dev/null; then
-		echo >&2 "you need to setup a git alias 'meta' to point to the setgitperms.pl script. "
+		echo >&2 "you need to setup a git alias 'meta' to point to the setgitperms.perl script. "
 		echo >&2 "note: you are advised to use the -n option, which saves user/group names "
 		echo >&2 "rather than uid/gid."
 		exit $ERR_GIT_META_NOT_FOUND
+	elif ! echo "use Lchown;" | perl; then
+		echo >&2 "you need to install the Lchown perl module, also called liblchown-perl."
+		exit $ERR_PERL_LCHOWN_NOT_FOUND
 	fi
 	git_install_meta_r_hook "$h" pre-commit
 	git_install_meta_w_hook "$h" post-checkout

@@ -22,6 +22,7 @@ use strict;
 use Getopt::Long;
 use File::Find;
 use File::Basename;
+use Lchown;
 
 my $usage =
 "Usage: setgitperms.perl [OPTION]... <--read|--write>
@@ -83,9 +84,9 @@ if ($write_mode) {
 
 		    print "Updating uid/gid on $path: old=$wpwname/$wgrpname, new=$pwname/$grpname\n";
 		}
-		chown $uid, $gid, $fullpath;
+		lchown $uid, $gid, $fullpath;
 	    }
-	    if ($mode ne $wmode) {
+	    if ($mode ne $wmode && ! -l $fullpath) {
 		$verbose && print "Updating permissions on $path: old=$wmode, new=$mode\n";
 		chmod oct($mode), $fullpath;
 	    }
