@@ -301,8 +301,8 @@ gbk_track() {
 	# TODO: prevent when a parent of $source already exists
 	# TODO: prevent when a child of $source already exists, or give
 	# option to remove child
-	local source="$(readlink -f "$(dirname "$2")")/$(basename "$2")"
-	if [ "$source" != "$2" ]; then
+	local source="$(readlink -f "$(dirname "$1")")/$(basename "$1")"
+	if [ "$source" != "$1" ]; then
 		echo >&2 "source traverses symlinks: $source"
 		echo >&2 "we only store canonical paths or the symlink itself"
 		exit $ERR_SOURCE_TRAVERSES_LINKS
