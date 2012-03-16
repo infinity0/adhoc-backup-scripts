@@ -1,0 +1,742 @@
+#!/bin/sh
+# Synchronise snapshots of a dynamic file to multiple peers over bittorrent.
+# TODO: use GPG to sign the torrents and distribute the signatures as well
+
+################################################################################
+## script constants
+################################################################################
+
+ERR_BIN_NOT_FOUND=3
+ERR_NO_SUCH_SUBCMD=4
+ERR_CONF_NOT_SET=5
+ERR_REMOTE_ONLY=6
+ERR_LABEL_EMPTY=10
+ERR_SOURCE_EMPTY=11
+ERR_SOURCE_NOT_FOUND=12
+ERR_SOURCE_ALREADY_SEEDED=13
+ERR_SOURCE_TORRENT_NOT_UNIQUE=14
+ERR_TRANSMISSION_TOO_OLD=23
+ERR_NO_OPEN_PORT=24
+ERR_BTTRACK_BAD_SHEBANG=26
+
+if [ -n "$DEBUG" ]; then set -x; fi
+set -o errexit
+
+abort() {
+	local x=$1; shift
+	for i in "$@"; do echo >&2 "abort: $i"; done
+	exit $x
+}
+
+log() {
+	echo "$(date +"%Y-%m-%d %H:%M:%S")" "$@"
+}
+
+default_cfg() {
+	cat > "$1"
+	echo >&2 "wrote a default $1; please customise it if things don't work."
+}
+
+_ensure_bin() {
+	for i in "$@"; do
+		which "$i" >/dev/null || abort $ERR_BIN_NOT_FOUND "$i not found"
+	done
+}
+
+_set_bin_choice() {
+	if which "$1" >/dev/null; then echo true; else echo false; fi
+}
+
+init_peer() {
+	test -r "btsync.vars" || default_cfg "btsync.vars" <<EOF
+################################################################################
+# settings for btsync peers
+################################################################################
+
+# bittorrent port to listen on, 'random' for random port
+BT_PEER_PORT="random"
+
+# whether to use rtorrent or transmission-daemon
+USE_RTORRENT=$(_set_bin_choice rtorrent)
+
+# auto-expire this many or higher snapshots
+# set this high, if the thing you're backing up is single-snapshot state
+# set this low (but >2) if the thing you're backing up is itself a history of items
+# - e.g. disk image containing rsnapshot history, or zfs image
+SNAPSHOT_EXPIRE_NUM=3
+
+EOF
+	. "./btsync.vars"
+	BT_PEER_PORT="${BT_PEER_PORT:-random}"
+	USE_RTORRENT="${USE_RTORRENT:-true}"
+	SNAPSHOT_EXPIRE_NUM="${SNAPSHOT_EXPIRE_NUM:-3}"
+
+	test -n "$CWD" && cd "$CWD"
+	# in case we cd for some reason
+	CWD="$PWD"
+	# fixed location to simplify things
+	TRACKER_CACERT="$CWD/bttrack.pem"
+
+	if $USE_RTORRENT; then
+		_ensure_bin rtorrent screen python
+		_ensure_xmlrpc2scgi
+		alias btc=rtr
+		alias btc_ctrl=rtr_ctrl
+	else
+		_ensure_bin transmission-daemon transmission-remote nc
+		_ensure_transmission_able
+		alias btc=tbt
+		alias btc_ctrl=tbt_ctrl
+	fi
+}
+
+_ensure_one() {
+	local err="$1" zero="$2" more="$3"
+	local only=""
+	while read x; do
+		test -z "$only" || abort "$1" "$3"
+		only="$x"
+	done
+	test -z "$only" && abort "$1" "$2"
+	echo "$only"
+}
+
+get_expired_labels() {
+	local source="$1"
+	for i in "$source".*.torrent; do
+		label="${i#$source.}"
+		label="${label%.torrent}"
+		echo "$label"
+	done | sort -u -r | tail -n+"$SNAPSHOT_EXPIRE_NUM"
+}
+
+process_new() {
+	local source="$1"
+	test -f "$source" && abort $ERR_REMOTE_ONLY "not the remote side; file exists: $source"
+	for i in "$source".*.torrent; do
+		test -f "${i%.torrent}" || echo "${i%.torrent}"
+	done | _ensure_one $ERR_SOURCE_TORRENT_NOT_UNIQUE \
+	  "no incomplete $source.*.torrent" "more than one incomplete $source.*.torrent" | while read init_img; do
+		get_expired_labels "$source" | tac | while read label; do
+			rm "$source.$label.torrent" || true
+			mv "$source.$label" "$init_img"
+		done
+		if [ ! -f "$init_img" ]; then
+			local prev=$(ls -1 "$source".*.torrent | tail -n2 | head -n1)
+			if [ -z "$prev" -o "$prev" = "$init_img.torrent" ]; then
+				touch "$init_img"
+			else
+				cp "${prev%.torrent}" "$init_img"
+			fi
+		fi
+	done
+}
+
+_get_env_exec() {
+	# get the exec intended by an invocation of env
+	local orig="$1"
+	while shift; do
+		test "$1" = "--" && break
+	done
+	while shift; do
+		case "$1" in
+		*=*) continue;;
+		*) if which "$1" >/dev/null; then echo "$1"; return; else continue; fi ;;
+		esac
+	done
+	echo "$orig"
+}
+
+_daemon_do() {
+	local pid="$1" name="$2"; shift 2
+	local matcher="--exec" bin=$(which "$name")
+	local startas="$bin"
+	if  [ "$bin" = "/usr/bin/env" ]; then
+		name=$(_get_env_exec "$bin" "$@")
+		bin=$(which "$name")
+	fi
+	if [ "$name" = "screen" ]; then
+		# hack around screen being stupid
+		bin="screen"
+		matcher="--name"
+	elif [ -f "$pid" ]; then
+		# a dirty hack around --exec matching the interpreter rather than the executable
+		local exe=$(readlink /proc/$(cat "$pid")/exe || true)
+		if [ -n "$exe" -a "${exe%$name}" = "$exe" ]; then
+			bin="$name"
+			matcher="--name"
+		fi
+	fi
+	if [ "$1" = "--start" ]; then
+		/sbin/start-stop-daemon --pidfile "$pid" "$matcher" "$bin" --startas "$startas" "$@"
+	else
+		/sbin/start-stop-daemon --pidfile "$pid" "$matcher" "$bin" "$@"
+	fi
+}
+
+_daemon() {
+	local subcmd="$1" pid="$2" bin="$3"; shift 3;
+	case "$subcmd" in
+	start)	_daemon_do "$pid" "$bin" --start --oknodo --make-pidfile --background -- "$@";;
+	stop)	_daemon_do "$pid" "$bin" --stop --oknodo --retry="TERM/30/KILL/5" "$@";;
+	status)
+		# some daemons take a little time to actually write the pid file
+		if ! _daemon_do "$pid" "$bin" --status "$@"; then
+			sleep 0.2
+			_daemon_do "$pid" "$bin" --status "$@";
+		fi
+		;;
+	esac
+}
+
+################################################################################
+# transmission code
+################################################################################
+
+_get_open_port() {
+	local lo="${1:-3137}" hi="${2:-7371}"
+	local port="$lo"
+	while test "$port" -lt "$hi"; do
+		port=$(expr "$port" + 1);
+		if ! nc -z localhost "$port"; then echo "$port"; return; fi
+	done
+	abort $ERR_NO_OPEN_PORT "could not find available port between $lo - $hi!"
+}
+
+_ensure_transmission_able() {
+	#if ! objdump -S "$(which transmission-daemon)" | grep -C5 "0x2751" | grep -q curl_easy_setopt; then
+		# 0x2751 is CURLOPT_CAINFO
+	if ! grep -q CURL_CA_BUNDLE "$(which transmission-daemon)"; then
+		abort $ERR_TRANSMISSION_TOO_OLD \
+		  "your version of transmission-daemon does not read the CURL_CA_BUNDLE envvar" \
+		  "you need 2.60 or later - see https://trac.transmissionbt.com/ticket/4810"
+	fi
+}
+
+tbt() {
+	local subcmd="$1"; shift
+	local pidfile="$CWD/tbt/daemon.pid"
+	case "$subcmd" in
+	start)
+		mkdir -p "$CWD/tbt/incoming"
+		test -f "$CWD/tbt/settings.json" || {
+			if [ "$BT_PEER_PORT" = "random" ]; then
+				echo '{ "peer-port-random-on-start": true }'
+			else
+				echo '{ "peer-port": '"$BT_PEER_PORT"' }'
+			fi
+		} > "$CWD/tbt/settings.json"
+		_daemon start "$pidfile" \
+		env TR_CURL_SSL_VERIFY=1 CURL_CA_BUNDLE="$TRACKER_CACERT" \
+		transmission-daemon --pid-file "$pidfile" --log-debug --logfile "$CWD/tbt/daemon.log" \
+		  --rpc-bind-address 127.0.0.1 --port "$(_get_open_port)" \
+		  -g "$CWD/tbt" -c "$CWD/tbt/incoming" -w "$CWD" --no-incomplete-dir \
+		  --no-dht --encryption-required
+		;;
+	stop|status)	_daemon "$subcmd" "$pidfile" transmission-daemon;;
+	ensure)	tbt status || tbt start;;
+	restart)	tbt status && tbt stop; tbt start;;
+	*)	abort $ERR_NO_SUCH_SUBCMD "unrecognised subcmd: $subcmd";;
+	esac
+}
+
+tbt_rpc() {
+	tbt status || return 1
+	local rpc_port=$(sed -nre 's|.*"rpc-port"\s*:\s*([0-9]+)\s*.*|\1|gp' "$CWD/tbt/settings.json")
+	if ! nc -z localhost "$rpc_port"; then sleep 0.2; fi
+	transmission-remote "localhost:$rpc_port" "$@"
+}
+
+_extract_fields() {
+	local header="$1"; shift
+	local awkexpr=""
+	for key in "$@"; do
+		local key_rindex=$(expr "$header" : ".*$key")
+		local lindex=$(expr "$key_rindex" - "${#key}")
+		local rindex=$(expr "$header" : ".*$key *")
+		if [ "$rindex" = "${#header}" ]; then
+			awkexpr="$awkexpr"' substr($0, '"$lindex"' + 1)'
+		else
+			awkexpr="$awkexpr"' substr($0, '"$lindex"' + 1, '"$rindex"' - '"$lindex"')'
+		fi
+	done
+	awk '{ print '"$awkexpr"'; }'
+}
+
+_info_extract_hash() {
+	grep -Poi 'Hash: [A-Z0-9]{40}' | cut '-d ' -f2
+}
+
+tbt_ctrl() {
+	local subcmd="$1" source="$2"
+	test -n "$source" || abort $ERR_SOURCE_EMPTY "empty source specified"
+	case "$subcmd" in
+	get_existing)
+		# output $hash $name for each torrent matching $source.*
+		tbt_rpc -l | { read header; _extract_fields "$header" "ID" "Name"; } | while read id name; do
+			if [ "$id" = "Sum:" ]; then break; fi
+			id="${id%[!0-9]}"
+			case "$name" in
+			"$source".*)
+				local hash=$(tbt_rpc -t "$id" -i | _info_extract_hash)
+				echo "$hash" "$name";;
+			*)	continue;;
+			esac
+		done
+		;;
+	stop_all)
+		{ tbt_ctrl get_existing "$source" || true; } | while read hash name; do
+			# will print 0 on success but it's a hassle to filter this
+			# in such a way that e.g. "exit 1" is preserved
+			tbt_rpc -t "$hash" -r
+		done
+		;;
+	# $source is actually $source.$label.torrent for add_torrent
+	add_torrent)	cp "$source" "$CWD/tbt/incoming";;
+	*)	abort $ERR_NO_SUCH_SUBCMD "unrecognised subcmd: $subcmd";;
+	esac
+}
+
+################################################################################
+# rtorrent code
+################################################################################
+
+_augment_path() {
+	local dir="$1" exe="$2" # dir must be absolute
+	if [ -f "$1/$2" ]; then
+		if [ -x "$1/$2" ]; then
+			PATH="$PATH:$1"
+			return 0
+		fi
+		echo >&2 "not executable: $1/$2"
+	fi
+	return 1
+}
+
+_ensure_xmlrpc2scgi() {
+	if ! which xmlrpc2scgi.py >/dev/null; then
+		_augment_path "$CWD" xmlrpc2scgi.py || \
+		_augment_path $(dirname "$(readlink -f "$0")") xmlrpc2scgi.py || \
+		abort $ERR_BIN_NOT_FOUND "could not locate xmlrpc2scgi.py"
+	fi
+}
+
+_scp_xmlrpc2scgi() {
+	local sock="$1" work_dir="$2"
+	local src="xmlrpc2scgi.py" dst="$work_dir/xmlrpc2scgi.py"
+	_ssh "$sock" . test -e "$dst" </dev/null || \
+	_ssh "$sock" . which "$src" >/dev/null </dev/null || \
+	_scp "$sock" "$(which "$src")" ".:$dst"
+}
+
+rtr() {
+	local subcmd="$1"; shift
+	local pidfile="$CWD/rtr/daemon.pid"
+	case "$subcmd" in
+	start)
+		mkdir -p "$CWD/rtr/incoming" "$CWD/rtr/session"
+		rtr status || rm -f "$CWD/rtr/daemon.rpc"
+		test -f "$CWD/rtr/.screenrc" || touch "$CWD/rtr/.screenrc"
+		local btportarg=port_range="$BT_PEER_PORT-$BT_PEER_PORT"
+		if [ "$BT_PEER_PORT" = "random" ]; then btportarg=port_random=yes; fi
+		_daemon start "$pidfile" \
+		screen -S rtorrent -D -m -c "$CWD/rtr/.screenrc" rtorrent -n \
+		  -o http_cacert="$TRACKER_CACERT" -o scgi_local="$CWD/rtr/daemon.rpc" \
+		  -o directory="$CWD" -o session="$CWD/rtr/session" \
+		  -O schedule=watch,5,5,load_start="$CWD/rtr/incoming/*" \
+		  -o "$btportarg" -o dht=disable -o encryption=require_RC4
+		;;
+	status)	_daemon "$subcmd" "$pidfile" screen;;
+	stop)
+		pgrep -P "$(cat "$pidfile")" > "$pidfile.2" || true
+		# shutdown rtorrent cleanly with -INT. sending -TERM to SCREEN doesn't do this.
+		_daemon stop "$pidfile.2" rtorrent --retry="INT/30/KILL/5"
+		;;
+	ensure)	rtr status || rtr start;;
+	restart)	rtr status && rtr stop; rtr start;;
+	*)	abort $ERR_NO_SUCH_SUBCMD "unrecognised subcmd: $subcmd";;
+	esac
+}
+
+rtr_rpc() {
+	xmlrpc2scgi.py -p "scgi://$CWD/rtr/daemon.rpc" "$@"
+}
+
+rtr_ctrl() {
+	local subcmd="$1" source="$2"
+	test -n "$source" || abort $ERR_SOURCE_EMPTY "empty source specified"
+	case "$subcmd" in
+	get_existing)
+		# output $hash $name for each torrent matching $source.*
+		{
+		echo -n 'tt = '
+		rtr_rpc download_list
+		echo 'for i in tt: print i'
+		} | python | while read hash; do
+			local name=$(rtr_rpc d.get_name "$hash")
+			case "$name" in
+			"$source".*)
+				echo "$hash" "$name"
+				;;
+			*)	continue;;
+			esac
+		done
+		;;
+	stop_all)
+		{ rtr_ctrl get_existing "$source" || true; } | while read hash name; do
+			# will print 0 on success but it's a hassle to filter this
+			# in such a way that e.g. "exit 1" is preserved
+			rtr_rpc d.erase "$hash"
+		done
+		;;
+	# $source is actually $source.$label.torrent for add_torrent
+	add_torrent)	cp "$source" "$CWD/rtr/incoming";;
+	*)	abort $ERR_NO_SUCH_SUBCMD "unrecognised subcmd: $subcmd";;
+	esac
+}
+
+################################################################################
+## END REMOTE METHODS
+## DO NOT REMOVE THESE LINES; THEY ARE USED AS A DELIMITER
+################################################################################
+
+init_peer
+
+init_origin() {
+	local default_USE_MKTORRENT=$(_set_bin_choice mktorrent)
+	test -r "bttrack.vars" || default_cfg "bttrack.vars" <<EOF
+################################################################################
+# tracker settings
+################################################################################
+
+TRACKER_EXTERNAL_ADDRESS=https://localhost:443      # tracker reverse proxy's external address
+TRACKER_EXTERNAL_CACERT="\$HOME/pub/cacert.pem"      # tracker reverse proxy's CA cert to verify with
+
+TRACKER_LOCAL_BIND=127.0.0.1    # local tracker's bind interface
+TRACKER_LOCAL_PORT=16969        # local tracker's bind port
+TRACKER_LOCAL_INTERVAL=30       # tracker filesystem scan (for new torrents) and write (for peer info) period
+TRACKER_ANNOUNCE_INTERVAL=60    # tracker announcement period
+
+# sometimes necessary if your router is screwed
+# e.g. when it only honours port forward settings for WAN but not LAN
+TRACKER_HACK="--nat_check 0 --only_local_override_ip 0"
+# if running tracker on the same machine as the origin's client node
+TRACKER_HACK="--fallback_ip \$YOUR_EXTERNAL_IP"
+TRACKER_HACK=""
+
+# use mktorrent or transmission-create to create .torrent files
+USE_MKTORRENT=$(_set_bin_choice mktorrent)
+
+EOF
+	. "./bttrack.vars"
+	{ echo "$TRACKER_EXTERNAL_ADDRESS" | grep -q localhost; } && abort $ERR_CONF_NOT_SET "please customise bttrack.vars"
+	# TODO: validate more variables
+	USE_MKTORRENT="${USE_MKTORRENT:-true}"
+	TRACKER_LOCAL_INTERVAL="${TRACKER_LOCAL_INTERVAL:-30}"
+	TRACKER_ANNOUNCE_INTERVAL="${TRACKER_ANNOUNCE_INTERVAL:-60}"
+	test -f "$TRACKER_CACERT" || TRACKER_CACERT="${TRACKER_EXTERNAL_CACERT}"
+
+	_ensure_bin bttrack ssh python
+	if $USE_MKTORRENT; then
+		_ensure_bin mktorrent
+	else
+		_ensure_bin transmission-create
+	fi
+
+	if head -n1 "$(which bttrack)" | grep env; then
+		# invocation with "env python" makes the process have procname=python
+		# we need to have procname=bttrack so start-stop-daemon works correctly
+		abort $ERR_BTTRACK_BAD_SHEBANG "bttrack must have #!/usr/bin/python, not #!/usr/bin/env python"
+	fi
+}
+
+get_remotes() {
+	local has_remotes=false
+	test -r "remotes.txt" || default_cfg "remotes.txt" <<EOF
+# btsync remotes config
+# each line should read <remote> <work_dir>
+# - <remote> should match a Host entry in ~/.ssh/config
+# - <work_dir> should be an absolute path on the remote side for btsync
+#
+# Everything should be configured by the Host block in ~/.ssh/config, including
+# port, user, id file, etc. You can use the HostName field to configure multiple
+# settings for the same host machine, e.g.:
+#
+# | Host my.vm.net
+# | User myNormalAccount
+# | IdentityFile /id_file/for/normal/use/shell
+# |
+# | Host my.vm.net.btsync
+# | HostName my.vm.net
+# | User btsyncAccount
+# | IdentityFile /restricted/id_file/for/btsync/only
+#
+#localhost	/var/lib/btsync
+EOF
+	grep -v '^#' "remotes.txt" | { while read remote work_dir; do
+		echo "$remote	$work_dir"
+		has_remotes=true
+	done
+	$has_remotes || abort $ERR_CONF_NOT_SET "please customise remotes.txt"
+	}
+}
+
+btt() {
+	local subcmd="$1"; shift
+	local pidfile="$CWD/bttrack.pid"
+	case "$subcmd" in
+	start)
+		touch "$CWD/bttrack.dat"
+		_daemon start "$pidfile" \
+		bttrack --allowed_dir "$CWD" --dfile "$CWD/bttrack.dat" --logfile "$CWD/bttrack.log" \
+		  --scrape_allowed specific --log_nat_checks 1 $TRACKER_HACK \
+		  --bind "$TRACKER_LOCAL_BIND" --port "$TRACKER_LOCAL_PORT" \
+		  --min_time_between_log_flushes 1 --save_dfile_interval "$TRACKER_LOCAL_INTERVAL" \
+		  --parse_dir_interval "$TRACKER_LOCAL_INTERVAL" --reannounce_interval "$TRACKER_ANNOUNCE_INTERVAL"
+		;;
+	stop|status)	_daemon "$subcmd" "$CWD/bttrack.pid" bttrack;;
+	ensure)	btt status || btt start;;
+	restart)	btt status && btt stop; btt start;;
+	*)	abort $ERR_NO_SUCH_SUBCMD "unrecognised subcmd: $subcmd";;
+	esac
+}
+
+snapshot() {
+	local source="$1" label="$2"
+	test -n "$label" || abort $ERR_LABEL_EMPTY "provide a label"
+	test -f "$source" || abort $ERR_SOURCE_NOT_FOUND "source not found: $source"
+	local target="$source.$label"
+	if which mktorrent >/dev/null; then
+		ln -s "$source" "$target"
+		mktorrent -p -a "$TRACKER_EXTERNAL_ADDRESS/announce" "$target"
+	else
+		# transmission-create resolves symlink; we need instead to force name to be "$source.$label"
+		ln "$source" "$target"
+		transmission-create --private --tracker "$TRACKER_EXTERNAL_ADDRESS/announce" "$target"
+	fi
+}
+
+local_scrape() {
+	local source="$1" subkey="$2"
+	btc_ctrl get_existing "$source" | _ensure_one $ERR_SOURCE_TORRENT_NOT_UNIQUE \
+	  "no torrents for $source" "more than one torrents for $source ??" | { read hash name
+	cat << EOF | python
+from BitTornado.bencode import bdecode
+from urllib import urlopen
+from itertools import chain
+
+hash = "$hash"
+pairs = hash[0::2], hash[1::2]
+hash_url = "".join(chain(*zip('%'*(len(hash)/2), *pairs)))
+hash_raw = "".join(map(lambda t: chr(int("".join(t),16)), zip(*pairs)))
+subkey = "$subkey"
+
+d = bdecode(urlopen("http://$TRACKER_LOCAL_BIND:$TRACKER_LOCAL_PORT/scrape?info_hash=%s" % hash_url).read())
+data = d["files"][hash_raw]
+print data[subkey] if subkey else data
+EOF
+	}
+}
+
+_ssh() {
+	local sock="$1"; shift
+	ssh -S "$sock" "$@"
+}
+
+_scp() {
+	local sock="$1"; shift
+	scp -o ControlPath="$sock" "$@"
+}
+
+_scp_unless_exists() {
+	local sock="$1" src="$2" dst="$3"
+	_ssh "$sock" . test -e "$dst" </dev/null || _scp "$sock" "$src" ".:$dst"
+}
+
+_run_remote() {
+	local source="$1" remote="$2" work_dir="$3"; shift 3
+	mkdir -m 700 -p "$CWD/.ssh" || chmod 700 "$CWD/.ssh"
+
+	# start ssh control master
+	local sock="$CWD/.ssh/$remote.ssh"
+	test -S "$sock" || _ssh "$sock" -fNT -M "$remote"
+	trap '_ssh "'"$sock"'" -O exit . 2>/dev/null || true' EXIT INT TERM
+
+	# install any missing software / files
+	_scp_unless_exists "$sock" "$TRACKER_EXTERNAL_CACERT" "$work_dir/bttrack.pem"
+	$USE_RTORRENT && _scp_xmlrpc2scgi "$sock" "$work_dir"
+	echo "==== stdout $remote:$work_dir"
+	{
+	sed -e '/##'' END REMOTE METHODS/,$d' "$0"
+	echo "cd $work_dir"
+	echo "init_peer"
+
+	# either run a callback if provided, or read commands from stdin
+	# callback's stdout will be piped to remote sh
+	local callback="$1"
+	if [ -n "$callback" ]; then
+		shift
+		"$callback" "$sock" "$@"
+	else
+		cat
+	fi
+	} | _ssh "$sock" . sh
+	local x=$?
+	echo "==== stdout end"
+	return $x
+}
+
+init() {
+	local has_errors=0
+	get_remotes | { while read remote work_dir; do
+		log "$remote:$work_dir" "attempt" "validate $source"
+		if _run_remote "$source" "$remote" "$work_dir" </dev/null; then
+			log "$remote:$work_dir" "success" "validate $source"
+		else
+			has_errors=1
+			log "$remote:$work_dir" "failure" "validate $source"
+		fi
+	done
+	return $has_errors
+	}
+}
+
+stop() {
+	local source="$1"
+	get_remotes | { while read remote work_dir; do
+		log "$remote:$work_dir" "attempt" "stop $source"
+		if _run_remote "$source" "$remote" "$work_dir" <<EOF; then
+btc_ctrl stop_all "$source"
+EOF
+			log "$remote:$work_dir" "success" "stop $source"
+		else
+			log "$remote:$work_dir" "failure" "stop $source"
+		fi
+	done
+	btc_ctrl stop_all "$source"
+	}
+}
+
+_remote_add_torrent() {
+	local sock="$1" source="$2" label="$3" work_dir="$4"
+	_scp "$sock" "$source.$label.torrent" ".:$work_dir/"
+	cat <<EOF
+btc ensure
+btc_ctrl stop_all "$source"
+process_new "$source" "$label"
+ls -l "$source".*
+btc_ctrl add_torrent "$source.$label.torrent"
+EOF
+}
+
+dist() {
+	local source="$1" label="$2"
+	btt ensure
+	btc ensure
+	test -z "$(btc_ctrl get_existing "$source")" || abort $ERR_SOURCE_ALREADY_SEEDED "already seeding some version of $source"
+
+	# create torrent and notify tracker
+	rm -f "$source".*.torrent
+	chmod -w "$source"
+	snapshot "$source" "$label"
+	btt restart # force tracker to grab the new torrent. this is less buggy than waiting for it to happen.
+	btc_ctrl add_torrent "$source.$label.torrent"
+
+	# order to start torrent
+	local has_errors=0 expected=1
+	get_remotes | { while read remote work_dir; do
+		log "$remote:$work_dir" "attempt" "start $source $label"
+		if _run_remote "$source" "$remote" "$work_dir" \
+		  _remote_add_torrent "$source" "$label" "$work_dir"; then
+			expected=$(expr "$expected" + 1)
+			log "$remote:$work_dir" "success" "start $source"
+		else
+			has_errors=1
+			log "$remote:$work_dir" "failure" "start $source"
+		fi
+	done
+	log "wait $source" "expected" "$expected"
+	sleep "$TRACKER_LOCAL_INTERVAL"
+
+	# wait until completion
+	local complete=$(local_scrape "$source" complete || { sleep "$TRACKER_LOCAL_INTERVAL"; echo 0; })
+	log "wait $source" "complete" "$complete/$expected"
+	while [ "$complete" -lt "$expected" ]; do
+		sleep "$TRACKER_LOCAL_INTERVAL"
+		complete=$(local_scrape "$source" complete)
+		log "wait $source" "complete" "$complete/$expected"
+	done
+
+	# order to stop torrent
+	stop "$source"
+	chmod +w "$source"
+
+	return $has_errors
+	}
+}
+
+init_origin
+
+case "$1" in
+btc)
+	shift; btc "$@"
+	;;
+btc_ctrl)
+	shift; btc_ctrl "$@"
+	;;
+# only useful for debugging
+#tbt|tbt_ctrl|tbt_rpc|rtr|rtr_ctrl|rtr_rpc)
+#	"$@"
+#	;;
+# remote-only; no point exposing
+#get_expired_labels|process_new)
+#	"$@"
+#	;;
+btt|snapshot|get_remotes|local_scrape|init|stop|dist)
+	"$@"
+	;;
+*)	cat <<'EOF'
+Usage: [<VAR>=<val>] $0 <SUBCMD> [<ARGS>]
+
+Subcommands:
+btc {start|stop|status|ensure|restart}
+                    control the bt client daemon process
+btc_ctrl { get_existing <source> | stop_all <source> | add_torrent <torrent> }
+                    control the bt client
+btt {start|stop|status|ensure|restart}
+                    control the bt tracker daemon process
+snapshot <source> <label>
+                    create a new .torrent for <source> with label <label>
+get_remotes         parse the remotes file
+local_scrape <source> [<key>]
+                    scrape info for a sole torrent for <source>; either all info
+                    as a python/JSON dict, or the value of a key in it
+init                initialise configs of all peers and make sure they are valid
+stop <source>       stop all running torrents for <source> across all peers
+dist <source> <label>
+                    distribute a new snapshot of <source> with label <label>
+
+Files:
+remotes.txt         [origin] remotes config, each line of <remote> <work_dir>
+bttrack.vars        [origin] tracker settings
+btsync.vars         per-remote settings for btsync
+EOF
+	exit 1
+	;;
+esac
+
+# Files (transient by-products):
+# .ssh/*.ssh          [origin] ssh ControlPath socket
+# bttrack.dat         [origin] tracker state file
+# bttrack.log         [origin] tracker log file
+# bttrack.pid         [origin] tracker pid file
+# bttrack.pem         [remote] CA certificate for tracker reverse proxy
+# xmlrpc2scgi.py      [remote] script to interact with rtorrent, if needed
+# rtr/                rtorrent settings
+# rtr/daemon.pid      rtorrent pid file (SCREEN)
+# rtr/daemon.pid.2    rtorrent pid file (actual, only if needed)
+# rtr/daemon.rpc      rtorrent SCGI socket
+# rtr/.screenrc       rtorrent .screenrc
+# tbt/                transmission settings
+# tbt/daemon.pid      transmission pid file
+# tbt/daemon.log      transmission log file

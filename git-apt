@@ -7,6 +7,7 @@ Requires python 2.7.
 Use the "init" and "update" subcommands for a demo.
 """
 # TODO: make the "diff" subcommand able to take arguments
+# TODO: add a subcommand to suggest packages to "markauto"
 
 
 import sys

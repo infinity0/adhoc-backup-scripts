@@ -180,6 +180,9 @@ install_backup_spec )
 		crontab -e
 	fi
 	;;
+test_find_method )
+	significant_lines | "find_$1" | make_backup_points "\$BACKUP_TARGET/"
+	;;
 "")
 	cat <<-EOF
 	To set up your own backup specification, do:
@@ -190,6 +193,7 @@ install_backup_spec )
 	EOF
 	;;
 *)
+	echo >&2 "Usage: $0 <SUBCMD> <ARGS>"
 	exit 1
 	;;
 esac

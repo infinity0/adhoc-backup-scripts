@@ -1,0 +1,22 @@
+Index: BitTornado/HTTPHandler.py
+===================================================================
+RCS file: /cvsroot/bittornado/BitTornado/HTTPHandler.py,v
+retrieving revision 1.6
+diff -u -w -r1.6 HTTPHandler.py
+--- BitTornado/HTTPHandler.py	17 Dec 2004 00:28:48 -0000	1.6
++++ BitTornado/HTTPHandler.py	15 Mar 2012 23:46:30 -0000
+@@ -2,7 +2,7 @@
+ # see LICENSE.txt for license information
+ 
+ from cStringIO import StringIO
+-from sys import stdout
++import sys
+ import time
+ from clock import clock
+ from gzip import GzipFile
+@@ -164,4 +164,4 @@
+         t = clock()
+         if t - self.lastflush > self.minflush:
+             self.lastflush = t
+-            stdout.flush()
++            sys.stdout.flush()

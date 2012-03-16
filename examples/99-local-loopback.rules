@@ -1,0 +1,11 @@
+# udev rule for setting perms on a loopback device
+# customise by replacing the parts delimited by %% %%
+
+# set up DM_LOOP_SRC for loopback device files. tested on debian, YMMV
+DEVPATH!="/devices/virtual/block/loop*", GOTO="loop_end"
+# the cat|head syntax is important due to quirky sysfs behaviour
+IMPORT{program}="/bin/sh -c 'echo -n DM_LOOP_SRC=\\047; cat /sys/$devpath/loop/backing_file | head -c-1; echo \\047;'"
+LABEL="loop_end"
+
+# match a loop device sourced from the given file
+ENV{DM_LOOP_SRC}=="%%/PATH/TO/YOUR/IMAGE%%", GROUP="%%YOUR_USER_GROUP%%", MODE="%%0640%%"

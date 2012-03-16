@@ -1,0 +1,5 @@
+# udev rule for setting perms on an LVM block device
+# customise by replacing the parts delimited by %% %%
+
+# match a LVM partition, taking advantage of lvm2's standard udev rules
+ENV{DM_VG_NAME}=="%%YOUR_VG_NAME%%", ENV{DM_LV_NAME}=="%%YOUR_LV_NAME%%", GROUP="%%YOUR_USER_GROUP%%", MODE="%%0640%%"

@@ -1,0 +1,82 @@
+Index: BitTornado/BT1/track.py
+===================================================================
+RCS file: /cvsroot/bittornado/BitTornado/BT1/track.py,v
+retrieving revision 1.69
+diff -u -w -r1.69 track.py
+--- BitTornado/BT1/track.py	18 Aug 2007 23:14:27 -0000	1.69
++++ BitTornado/BT1/track.py	15 Mar 2012 23:46:31 -0000
+@@ -27,6 +27,7 @@
+ from types import StringType, IntType, LongType, ListType, DictType
+ from binascii import b2a_hex, a2b_hex, a2b_base64
+ from string import lower
++from itertools import groupby
+ import sys, os
+ import signal
+ import re
+@@ -94,6 +95,7 @@
+     ('scrape_allowed', 'full', 'scrape access allowed (can be none, specific or full)'),
+     ('dedicated_seed_id', '', 'allows tracker to monitor dedicated seed(s) and flag torrents as seeded'),
+     ('compact_reqd', 1, "only allow peers that accept a compact response"),
++    ('fallback_ip', '', "fallback IP hack when X-Forwarded-For is a LAN address"),
+   ]
+ 
+ 
+@@ -174,6 +176,19 @@
+         r = str(int((s/1099511627776.0)*100.0)/100.0) + 'TiB'
+     return(r)
+ 
++def filter_peers(peers, ip, port):
++    if type(peers) == list:
++        peers = [peerinfo for peerinfo in peers
++            if not (peerinfo["ip"] == ip and int(peerinfo["port"]) == port)]
++    elif type(peers) == str:
++        selfpeer = "".join(map(chr, map(int, ip.split(".")) + [port/256, port%256]))
++        peers = ["".join(v[1] for v in vv)
++                 for k, vv in groupby(enumerate(peers), lambda x: x[0]/6)]
++        peers = "".join(filter(lambda x: x != selfpeer, peers))
++    else:
++        print "unrecognized peerdata", type(peers)
++    return peers
++
+ http_via_filter = re.compile(' for ([0-9.]+)\Z')
+ 
+ def _get_forwarded_ip(headers):
+@@ -198,10 +213,12 @@
+             pass
+     return headers.get('from')
+ 
+-def get_forwarded_ip(headers):
++def get_forwarded_ip(headers, fallback_ip=None):
+     x = _get_forwarded_ip(headers)
+-    if not is_valid_ip(x) or local_IPs.includes(x):
++    if not is_valid_ip(x):
+         return None
++    elif local_IPs.includes(x):
++        return fallback_ip or None
+     return x
+ 
+ def compact_peer_info(ip, port):
+@@ -868,7 +885,7 @@
+                 bencode({'failure reason':
+                 'your IP is not allowed on this tracker'}))
+ 
+-        nip = get_forwarded_ip(headers)
++        nip = get_forwarded_ip(headers, self.config.get('fallback_ip', None))
+         if nip and not self.only_local_override_ip:
+             ip = nip
+             try:
+@@ -959,6 +976,14 @@
+         data = self.peerlist(infohash, event=='stopped',
+                              params('tracker'), not params('left'),
+                              return_type, rsize, params('supportcrypto'))
++        selfport = int(params('port'))
++        data["peers"] = filter_peers(data['peers'], ip, selfport)
++        #ipppp = map(ord, data['peers'])
++        #for i, n in enumerate(ipppp):
++        #    if i % 6 == 5:
++        #        ipppp[i] = ipppp[i-1] * 256 + ipppp[i]
++        #        ipppp[i-1] = 0
++        #print ip, selfport, ipppp, data
+ 
+         if paramslist.has_key('scrape'):    # deprecated
+             data['scrape'] = self.scrapedata(infohash, False)

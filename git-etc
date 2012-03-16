@@ -5,6 +5,9 @@
 # inside a git repo - i.e. writes to either location show up immediately at the
 # other location. This is done via "bind mounts" - see mount(8) for details.
 #
+# NOTE: this tool can mirror files from part of the filesystem, not just /etc,
+# but "git-fs" was already taken.
+#
 # etckeeper wasn't enough for my purposes:
 # - tracked too many files by default, with no easy way to ignore most of them
 #   - e.g. I really don't care about /etc/rc*.d
@@ -18,25 +21,32 @@
 #   - you can share this to others for backup/review
 # - private config (e.g. passwords) in a repo owned by root
 #
-# usage example:
+# Usage example:
 #
-# # to set up gbk on your system
+# # to set up git-etc on your system
 # $ git config alias.meta "!<path/to/setgitperms.pl> -n"
 #
 # # to backup
-# $ git init && gbk init
-# $ gbk track /etc/apache2/sites-available && gbk bind
+# $ git init && git-etc init
+# $ git-etc track /etc/apache2/sites-available && git-etc bind
 # $ git add . && git commit
 #
 # # to restore
-# $ git clone <url> && gbk init
-# $ gbk install
+# $ git clone <url> && git-etc init
+# $ git-etc install
+
+HOST="${HOST:-.}"
+
+HOST_ABS=$(readlink -f "$HOST")
+HOST_BIND="$HOST/.bind"
+TMP_BIND="$HOST/.bind.tmp"
+TMP_MTAB="$HOST/.mtab.tmp"
 
 
 ERR_HOST_NOT_DIR=14
 ERR_BIND_NOT_FILE=15
 ERR_MTAB_SYMLINK=16
-ERR_REPO_NOT_GBK=17
+ERR_REPO_NOT_GITETC=17
 ERR_BOUND_INCOMPLETE=18
 ERR_NO_TARGET_OR_SOURCE=20
 ERR_BINDPOINT_L_NOTSUPPORTED=23
@@ -50,11 +60,6 @@ ERR_DUPES_MTAB=33
 ERR_GIT_META_NOT_FOUND=36
 ERR_PERL_LCHOWN_NOT_FOUND=37
 
-HOST=${HOST:-.}
-HOST_ABS=$(readlink -f "$HOST")
-HOST_BIND="$HOST/.bind"
-TMP_BIND="$HOST/.bind.tmp"
-TMP_MTAB="$HOST/.mtab.tmp"
 
 # clean up temp files
 trap 'rm -f '"$TMP_BIND"' '"$TMP_MTAB" EXIT INT TERM
@@ -83,8 +88,8 @@ pre_test() {
 	fi
 
 	if ! grep -Rq "git meta" "$(git rev-parse --git-dir)/hooks"; then
-		echo >&2 "not a gbk-enabled git repo. run $0 init to fix this."
-		exit $ERR_REPO_NOT_GBK
+		echo >&2 "not a git-etc-enabled git repo. run $0 init to fix this."
+		exit $ERR_REPO_NOT_GITETC
 	fi
 }
 
@@ -291,12 +296,12 @@ fi
 EOF
 }
 
-gbk_track() {
+gitetc_track() {
 	touch "$HOST_BIND"
 	local was_bound=false
 	if is_bound; then
 		was_bound=true
-		gbk_unbind
+		gitetc_unbind
 	fi
 	# TODO: prevent when a parent of $source already exists
 	# TODO: prevent when a child of $source already exists, or give
@@ -318,23 +323,23 @@ gbk_track() {
 	echo "$source" >> "$HOST_BIND"
 	sort_bind -o "$HOST_BIND"
 	if $was_bound; then
-		gbk_bind
+		gitetc_bind
 	fi
 }
 
-gbk_unbind() {
+gitetc_unbind() {
 	if is_bound; then
 		sort_bind -r | p_with_bind bind_source_apply do_unbind
 	fi
 }
 
-gbk_bind() {
+gitetc_bind() {
 	if ! is_bound; then
 		sort_bind | p_with_bind bind_source_apply do_bind
 	fi
 }
 
-gbk_status() {
+gitetc_status() {
 	if is_bound; then
 		echo "BOUND on '$HOST'"
 	else
@@ -342,7 +347,7 @@ gbk_status() {
 	fi
 }
 
-gbk_init() {
+gitetc_init() {
 	local h="$(git rev-parse --git-dir)/hooks"
 	if ! git config --get alias.meta > /dev/null; then
 		echo >&2 "you need to setup a git alias 'meta' to point to the setgitperms.perl script. "
@@ -358,8 +363,8 @@ gbk_init() {
 	git_install_meta_w_hook "$h" post-merge
 }
 
-gbk_install() {
-	gbk_bind
+gitetc_install() {
+	gitetc_bind
 	sudo git checkout .
 	local git_meta="$(git config --get alias.meta)"
 	sudo ${git_meta#!} -w
@@ -371,18 +376,18 @@ shift
 
 case $subcmd in
 init)
-	"gbk_$subcmd" "$@"
+	"gitetc_$subcmd" "$@"
 	;;
 status|track|untrack|bind|unbind|install)
 	pre_test
-	"gbk_$subcmd" "$@"
+	"gitetc_$subcmd" "$@"
 	;;
 help)
 	cat <<EOF
 Usage: [<VAR>=<value>] $0 <subcmd> [<args>]
 
 subcommands (git repo):
-init                set up this repo as a gbk repo (add hooks, etc)
+init                set up this repo as a git-etc repo (add hooks, etc)
 install             checkout files to / and set correct permissions.
 
 subcommands (mirror):
