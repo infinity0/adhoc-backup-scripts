@@ -102,7 +102,7 @@ generate_conf() {
 	local scheme="$2"
 	local backup="$3"
 	cat <<-EOF
-	include_conf	$SCRIPT_ROOT/rsnapshot.inc
+	include_conf	$SCRIPT_ROOT/share/rsnapshot.inc
 	snapshot_root	$backup_root/$backup
 
 	## Intervals
@@ -117,7 +117,7 @@ generate_conf() {
 }
 
 get_scheme_path() {
-	echo "$SCRIPT_ROOT/${1%.scheme}.scheme"
+	echo "$SCRIPT_ROOT/share/${1%.scheme}.scheme"
 }
 
 subcmd="$1"

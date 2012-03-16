@@ -204,12 +204,10 @@ _get_open_port() {
 }
 
 _ensure_transmission_able() {
-	#if ! objdump -S "$(which transmission-daemon)" | grep -C5 "0x2751" | grep -q curl_easy_setopt; then
-		# 0x2751 is CURLOPT_CAINFO
 	if ! grep -q CURL_CA_BUNDLE "$(which transmission-daemon)"; then
 		abort $ERR_TRANSMISSION_TOO_OLD \
 		  "your version of transmission-daemon does not read the CURL_CA_BUNDLE envvar" \
-		  "you need 2.60 or later - see https://trac.transmissionbt.com/ticket/4810"
+		  "you need 2.51 or later - see https://trac.transmissionbt.com/ticket/4810"
 	fi
 }
 
@@ -316,7 +314,7 @@ _augment_path() {
 _ensure_xmlrpc2scgi() {
 	if ! which xmlrpc2scgi.py >/dev/null; then
 		_augment_path "$CWD" xmlrpc2scgi.py || \
-		_augment_path $(dirname "$(readlink -f "$0")") xmlrpc2scgi.py || \
+		_augment_path "$(dirname "$(readlink -f "$0")")/lib" xmlrpc2scgi.py || \
 		abort $ERR_BIN_NOT_FOUND "could not locate xmlrpc2scgi.py"
 	fi
 }

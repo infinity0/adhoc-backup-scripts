@@ -2,7 +2,7 @@ Contents
 
 - [rsconf](#rsconf): simple backup framework for rsnapshot
 - [luksblk](#luksblk): manage simple LUKS block devices
-- [btsync](#btsync): synchronize a file over bittorrent
+- [btsync](#btsync): synchronise a file over bittorrent
 - [git-apt](#git-apt): track interesting parts of APT package state
 - [git-etc](#git-etc): track subparts of a filesystem
 
@@ -25,14 +25,14 @@ Current restrictions - **READ**:
 
 Features on top of rsnapshot:
 
-- provides sensible defaults for a large chunk of a typical rsnapshot config
+- provides sensible defaults for a large chunk of a typical rsnapshot config.
 	- separates backup source config vs. rotation/schedule config. admins can focus
-	  the former, and developers can refine and re-use the latter.
+	  on customising the former; developers can refine the latter for better reuse.
 	- joins rsnapshot rotation times with crontab schedules, which unfortunately are
-	  separated in rsnapshot and annoying to keep consistent
+	  separated in rsnapshot and annoying to keep consistent.
 - utility methods to automate more complex but important backup cases.
 	- detects system config files customised by the user, and ignores files that are
-	  unchanged from installation
+	  unchanged from installation.
 
 ## Pre-use
 
@@ -70,8 +70,8 @@ The chapters in backup.list MUST match the ones in the scheme it points to.
 Scheme files are intended to be distributed together with rsconf to save the
 user having to specify their own rotation/schedule (which is quite fiddly) but
 you can write your own as well if the ones provided really don't satisfy your
-needs. Currently scheme files are found in the same directory as the realpath of
-`rsconf`, but this might be extended later to be more easily user-customisable.
+needs. Currently scheme files are found in the /share/ subdirectory of the real
+path of `rsconf`, but this could be extended to be more easily customisable.
 
 ### backup.list chapters
 
@@ -82,8 +82,8 @@ a list of all the methods and brief notes on what the content should be.
 You can test the output of some content applied to a particular find-method by
 sending it to `rsconf test_find_method [METHOD]`. e.g.
 
-$ echo /etc | ./rsconf test_find_method all
-backup	/etc	$BACKUP_TARGET/
+	$ echo /etc | rsconf test_find_method all
+	backup	/etc	$BACKUP_TARGET/
 
 Note that $BACKUP_TARGET/ will be replaced by the actual backup target.
 
@@ -190,7 +190,7 @@ Manual patching (origin node only):
 
 - bttrack: use the version from bittornado's CVS
 	- `$ cvs -d:pserver:anonymous@cvs.degreez.net/cvsroot co bittornado && cd bittornado`
-	- `bittornado$ for i in $THIS_GIT_REPO/bttrack_*_*.patch; do patch -lp0 < "$i"; done`
+	- `bittornado$ for i in $THIS_GIT_REPO/patches/bttrack_*.patch; do patch -lp0 < "$i"; done`
 	- `bittornado$ mkdir -p ~/bin && sed -e '1s/env python/python/g' bttrack.py > ~/bin/bttrack`
 
 If you plan to create torrents from block devices, you'll need to apply one of
