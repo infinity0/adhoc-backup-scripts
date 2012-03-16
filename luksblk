@@ -12,8 +12,6 @@ if [ -n "$DEBUG" ]; then set -x; fi
 set -o errexit
 
 S_UNKNOWN=UNKNOWN
-S_NODEV_SSHFS=NODEV_SSHFS
-S_NODEV_NBD=NODEV_NBD
 S_NODEV_LOCAL=NODEV_LOCAL
 S_CRYPT_PREINIT=CRYPT_PREINIT
 S_CRYPT_AVAIL=CRYPT_AVAIL
@@ -48,11 +46,7 @@ _state() {
 		*)	echo $S_UNKNOWN;;
 		esac
 	else
-		if [ -f "$BLK.conf.sshfs" ]; then
-			echo $S_NODEV_SSHFS
-		elif [ -f "$BLK.conf.nbd" ]; then
-			echo $S_NODEV_NBD
-		elif [ -f "$BLK.img" ]; then
+		if [ -f "$BLK.img" ]; then
 			echo $S_NODEV_LOCAL
 		else
 			echo $S_UNKNOWN
@@ -69,39 +63,6 @@ _state_in() {
 _precond() { _state_in "$@" || { echo >&2 "precondition not fufilled: current state not one of $@"; exit 1; }; }
 # sleep 0.2 since udev can take a while to apply settings
 _postcond() { sleep 0.2; _state_in "$@" || { echo >&2 "postcondition not fufilled: current state not one of $@"; exit 100; }; }
-
-################################################################################
-## nbd / sshfs helper functions (deprecated DO NOT USE)
-################################################################################
-
-sshfs_preexpose() {
-	_precond $S_NODEV_SSHFS
-	sshfs -p "$PORT" "$HOST:$SRC" "$DST" -o allow_root -o reconnect
-	_postcond $S_NODEV_LOCAL
-}
-
-sshfs_preunexpose() {
-	_precond $S_NODEV_LOCAL
-	fusermount -u "$DST"
-	_postcond $S_NODEV_SSHFS
-}
-
-nbd_expose() {
-	_precond $S_NODEV_NBD
-	## TODO: START SERVER on remote side
-	DEV="${DEV:-/dev/nbd0}"
-	nbd-client -c "$DEV" || { echo >&2 "device $DEV not available"; exit 1; }
-	ssh -fNT -L localhost:36485:localhost:36485 -p "$PORT" "$HOST"
-	nbd-client localhost 36485 "$DEV"
-	_postcond $S_CRYPT_PREINIT $S_CRYPT_AVAIL $S_CRYPT_STRIP
-}
-
-nbd_unexpose() {
-	_precond $S_CRYPT_PREINIT $S_CRYPT_AVAIL $S_CRYPT_STRIP
-	nbd-client -d "$DEV"
-	## TODO: STOP SERVER on remote side
-	_postcond $S_NODEV_NBD
-}
 
 ################################################################################
 ## file helper functions
@@ -209,8 +170,6 @@ init|header|mount|umount|strip|unstrip)	"blk_$subcmd" "$@";;
 status)
 	case $(_state) in
 	$S_UNKNOWN) echo "unknown status";;
-	$S_NODEV_SSHFS) echo "unavailable device, from sshfs";;
-	$S_NODEV_NBD) echo "unavailable device, from network";;
 	$S_NODEV_LOCAL) echo "unavailable device, from image file";;
 	$S_CRYPT_PREINIT) echo "uninitialised device";;
 	$S_CRYPT_AVAIL) echo "crypt device, unmounted";;
@@ -251,8 +210,6 @@ ${block}.luks.header    LUKS header
 ${block}.luks.clobber   random data to clobber LUKS header with
 ${block}.mnt            symlink to mount destination
 ${block}.img            device image file (or symlink to it)
-${block}.conf.sshfs     [deprecated] env var presets for SSHFS
-${block}.conf.nbd       [deprecated] env var presets for nbd
 EOF
 	;;
 esac
