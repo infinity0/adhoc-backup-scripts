@@ -322,7 +322,9 @@ _ensure_xmlrpc2scgi() {
 _scp_xmlrpc2scgi() {
 	local sock="$1" work_dir="$2"
 	local src="xmlrpc2scgi.py" dst="$work_dir/xmlrpc2scgi.py"
+	# TODO: ssh quoting is fucked up, this will fail if $dst contains a space
 	_ssh "$sock" . test -e "$dst" </dev/null || \
+	# TODO: ssh quoting is fucked up, this will fail if $src contains a space
 	_ssh "$sock" . which "$src" >/dev/null </dev/null || \
 	_scp "$sock" "$(which "$src")" ".:$dst"
 }
@@ -548,6 +550,7 @@ _scp() {
 
 _scp_unless_exists() {
 	local sock="$1" src="$2" dst="$3"
+	# TODO: ssh quoting is fucked up, this will fail if $dst contains a space
 	_ssh "$sock" . test -e "$dst" </dev/null || _scp "$sock" "$src" ".:$dst"
 }
 
