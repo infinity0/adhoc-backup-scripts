@@ -24,8 +24,8 @@ _rereadvars() {
 	BLK_CLOB="${BLK}.luks.clobber"
 	BLK_DEV="${BLK}"
 	BLK_CRYPT="${BLK}_crypt"  # crypt device name
-	DEV=$(readlink "$BLK_DEV" || true)
-	DST=$(readlink "${BLK}.mnt" || true)
+	DEV="$(readlink "$BLK_DEV" || true)"
+	DST="$(readlink "${BLK}.mnt" || true)"
 }
 
 _state() {
@@ -39,11 +39,14 @@ _state() {
 			echo $S_UNKNOWN
 			return
 		fi
-		case $(file -s "$DEV") in
-		*\\0* )	echo $S_CRYPT_PREINIT;;
-		*LUKS* )	echo $S_CRYPT_AVAIL;;
-		*data*)	echo $S_CRYPT_STRIP;;
-		*)	echo $S_UNKNOWN;;
+		case $(head -c4 /dev/sdb1 | hexdump -e '/1 "%02X"') in
+		"00*")	echo $S_CRYPT_PREINIT;;
+		"4C554B53")	echo $S_CRYPT_AVAIL;;
+		*)
+			case $(file -s "$DEV") in
+			*data*)	echo $S_CRYPT_STRIP;;
+			*)	echo $S_UNKNOWN;;
+			esac
 		esac
 	else
 		if [ -f "$BLK.img" ]; then
@@ -55,7 +58,7 @@ _state() {
 }
 
 _state_in() {
-	local current=$(_state)
+	local current="$(_state)"
 	for i in "$@"; do test "$i" = "$current" && return 0; done
 	return 1
 }
@@ -70,7 +73,7 @@ _postcond() { sleep 0.2; _state_in "$@" || { echo >&2 "postcondition not fufille
 
 file_expose() {
 	_precond $S_NODEV_LOCAL
-	local DEV=$(sudo losetup --show -f "$BLK.img" || exit 1)
+	local DEV="$(sudo losetup --show -f "$BLK.img" || exit 1)"
 	ln -sf "$DEV" "$BLK_DEV"
 	_postcond $S_CRYPT_PREINIT $S_CRYPT_AVAIL $S_CRYPT_STRIP
 }
@@ -93,12 +96,12 @@ file_expand2fs() {
 	_precond $S_CRYPT_AVAIL
 	# needs to be run on actual image file
 	local MB="$1"
-	local osz=$(stat -L -c %s "$BLK.img")
+	local osz="$(stat -L -c %s "$BLK.img")"
 	test "$(expr "$MB" \* 1048576)" -gt "$osz" || { echo >&2 "won't shrink due to higher risk of data loss; do this yourself manually"; exit 1; }
 	file_unexpose || true
 	dd if=/dev/zero count=0 of="$BLK.img" seek="$MB" bs=1048576
-	local hsz=$(stat -c %s "$BLK_HEADER")
-	local fsz=$(expr \( "$MB" \* 1048576 - "$hsz" \) \/ 1024 )
+	local hsz="$(stat -c %s "$BLK_HEADER")"
+	local fsz="$(expr \( "$MB" \* 1048576 - "$hsz" \) \/ 1024 )"
 	file_expose
 	_rereadvars
 	sudo cryptsetup luksOpen -d "$BLK_KEY" "$DEV" "$BLK_CRYPT"
@@ -148,7 +151,7 @@ blk_umount() {
 
 blk_strip() {
 	_precond $S_CRYPT_AVAIL
-	local sz=$(stat -c %s "$BLK_HEADER")
+	local sz="$(stat -c %s "$BLK_HEADER")"
 	test -f "$BLK_CLOB" || dd if=/dev/urandom of="$BLK_CLOB" bs=1 count="$sz"
 	sudo dd if="$BLK_CLOB" of="$BLK_DEV" bs=1 count="$sz" conv=notrunc
 	_postcond $S_CRYPT_STRIP
@@ -157,7 +160,7 @@ blk_strip() {
 blk_unstrip() {
 	_precond $S_CRYPT_STRIP
 	# must be mounted
-	local sz=$(stat -c %s "$BLK_HEADER")
+	local sz="$(stat -c %s "$BLK_HEADER")"
 	sudo dd if="$BLK_HEADER" of="$BLK_DEV" bs=1 count="$sz" conv=notrunc
 	_postcond $S_CRYPT_AVAIL
 }
