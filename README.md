@@ -146,8 +146,8 @@ is only to the encrypted form of the data, so there less potential for a leak.
 You can create a single-purpose user for this, but you probably also need to
 give it access that persists across reboots. One way to do this is via udev. If
 your arrangement is quirky enough that online help isn't easily available, see
-examples/99-local-*.rules for some not-so-common use cases. In most cases, you
-probably want to set GROUP="<NON_ROOT_USER>" MODE="0640".
+`examples/99-local-*.rules` for some not-so-common use cases. In most cases, you
+probably want to set `GROUP="<NON_ROOT_USER>" MODE="0640"`.
 
 On a related note, `luksblk` itself tries to avoid using root privileges. It
 assumes it has read access to the block device, so you need to set up the above
@@ -283,8 +283,8 @@ HTTPS reverse proxy to the bttrack process, which listens on the local interface
 only. Make sure the reverse proxy sets the X-Forwarded-For header correctly;
 most non-anonymising web servers do this.
 
-See examples/bttrack.*.conf for snippets on how to configure various web servers
-to set up the reverse proxy.
+See `examples/bttrack.*.conf` on how to configure various web servers to set up
+the reverse proxy.
 
 You might also need to tweak the TRACKER_HACK variable in bttrack.vars. Due to
 this reverse proxy setup, `--fallback_ip` is likely necessary in most cases.
