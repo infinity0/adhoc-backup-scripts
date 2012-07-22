@@ -3,6 +3,7 @@ Contents
 - [rsconf](#rsconf): simple backup framework for rsnapshot
 - [luksblk](#luksblk): manage simple LUKS block devices
 - [btsync](#btsync): synchronise a file over bittorrent
+- [apt-clean](#apt-clean): clean and simplify APT package state
 - [git-apt](#git-apt): track interesting parts of APT package state
 - [git-etc](#git-etc): track subparts of a filesystem
 
@@ -290,9 +291,67 @@ this reverse proxy setup, `--fallback_ip` is likely necessary in most cases.
 
 ----
 
+# apt-clean
+
+Simplify and clean up redundant or incorrect APT package state.
+
+Over the lifetime of a Debian installation, the APT package state can become
+cluttered with redundant or "incorrect" (from a human point of view) state. This
+can interfere with its dependency resolution algorithms, which makes upgrading
+(both manual and automatic) much harder. These problems stem from certain
+intrinsic facts:
+
+- Imperfect manual maintenance
+	- If you are manually trying to resolve dependencies, it's very common to run
+	  "aptitude install A B C", where A B C are the dependencies of some target
+	  package T. However, this is actually incorrect, because these packages will be
+	  marked *manual*, meaning they will remain on the system even if no longer
+	  needed. This by itself may not seem like a big deal, but it interferes with
+	  future dependency resolution, because the algorithm will try to satisfy the
+	  constraints "do not remove A or B or C", which may be impossible and yet
+	  unnecessary, hence failing the resolution unnecessarily.
+- Subtle aptitude bugs or design flaws
+	- The APT object model is very complex, e.g.
+		- OR-dependencies and virtual packages means that "reverse depends" is not a
+		  well-defined concept (see e.g. bug #594237). Another side effect is that
+		  "aptitude remove X; aptitude install X;" in certain cases may not be a no-op,
+		  which is misleading and non-intuitive.
+		- the ability for users to change at any time whether "automatically installed"
+		  should include Depends:, Recommends: or Suggests: relationships means you
+		  cannot be sure what "automatic" really means.
+	- Because of this, it is not implausible that the dependency resolver algorithm
+	  makes different assumptions in different cases, which can result in undesired
+	  or (from a higher point of view) "inconsistent" package state.
+
+Dealing with these issues manually requires a deep understanding of the APT
+object model, and even then it's very tedious to remember which search patterns
+to use to do the job correctly. This tool aims to automate much of the process,
+by giving natural-language descriptions of these issues and instructions on how
+to proceed, and also remembers your previous answers to avoid repetition.
+
+Even though the functionality is not quite the same as `git-apt`, I wrote the
+latter to help with the problem described above, so I may combine the two at
+some point in the future.
+
+## Pre-use
+
+Depends: aptitude, dialog
+
+## Use
+
+Run as root and follow the instructions, which should be self-explanatory. It
+will save your answers into `$PWD/apt-clean.txt`, so make sure that is writable.
+
+Note: if you terminate the program with ctrl-C, your terminal will probably be
+a bit screwed. Simply run `reset` (part of ncurses, which is a dependency of
+dialog) and it will go back to normal. Even if you can't see those characters,
+typing `<ctrl-C> reset <enter>` should hopefully work.
+
+----
+
 # git-apt
 
-Keeps track of the "interesting" parts of aptitude package state.
+Keeps track of the "interesting" parts of APT package state.
 
 ## Pre-use
 

@@ -1,6 +1,6 @@
 #!/usr/bin/python
 """
-Store "interesting" aptitude package state under git.
+Store "interesting" APT package state under git.
 
 Requires python 2.7.
 

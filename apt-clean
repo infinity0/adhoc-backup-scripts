@@ -1,0 +1,98 @@
+#!/bin/bash
+# Simplify and clean up redundant or incorrect APT package state.
+STATE=apt-clean.txt
+test -f "$STATE" || { touch "$STATE" || exit 5; }
+test -w "$STATE" || exit 6;
+
+save_state() {
+	if grep -q '^\['"$1"'\]' "$STATE"; then
+		# blank between "[$1]" and "[!$1]||<EOF>"
+		awk '(/\[/ && !/\['"$1"'\]/ || 0){f=0} !f; /\['"$1"'\]/{f=1}' "$STATE" > "$STATE.tmp"
+		sed -i -e '/\['"$1"'\]/r'<(cat; echo;) "$STATE.tmp"
+	else
+		cat "$STATE" <(echo "[$1]"; cat; echo;) >> "$STATE.tmp"
+	fi
+	mv "$STATE.tmp" "$STATE"
+}
+
+read_state() {
+	# output between "[$1]" and "[!$1]||<EOF>"
+	awk '/\['"$1"'\]/{f=1} (/\[/ && !/\['"$1"'\]/ || 0){f=0} f' "$STATE"
+}
+
+maybe_invert() {
+	read x
+	if [ "$x" = "_" ]; then
+		comm -13 <(sort) "$1"
+	else
+		echo "$x"
+		sort
+	fi
+}
+
+# old stdout (tty) must be saved to fd 3 before calling this
+user_select() {
+	local tag="$1" query="$2" title="$3" sel="$4" sweep="$5"
+	aptitude search --disable-columns -F '%p %d' "$query" | {
+	local args=( "_" "INVERT SELECTION" "" )
+	local namesf=$(mktemp --tmpdir=/dev/shm apt-clean.XXXXXXXXXX)
+	while read name desc; do
+		local mark=off
+		if read_state "$tag" | grep -qxF "$name"; then
+			mark=on
+		fi
+		args+=( "$name" "$desc" "$mark" )
+		echo "$name" >> "$namesf"
+	done
+	sort "$namesf" -o "$namesf"
+	if ! [ -s "$namesf" ]; then return; fi
+
+	rm -f "$STATE.tmp"
+	if dialog --output-fd 4 --separate-output \
+	  --title "$title" --checklist "Select everything that you would like to $sel.\nEverything else will be $sweep." \
+	  43 132 40 "${args[@]}" 4> >(maybe_invert "$namesf" | save_state "$tag") >&3; then
+		while [ -f "$STATE.tmp" ]; do sleep 0.1; done
+		# aptitude sorts differently
+		comm -23 "$namesf" <(read_state "$tag" | sort)
+	fi
+	}
+}
+
+user_run() {
+	exec 3>&1 # save stdout for user_select
+	xargs -r -a <(user_select "${@:1:5}") "${@:6}"
+	read -p "press any key to continue..." x
+}
+
+NONSYSTEM='!~prequired !~pimportant !~E'
+TOP_LEVEL='!~Rpredepends:~i !~Rdepends:~i !~Rrecommends:~i'
+
+user_run 'manual' "~i $NONSYSTEM !($TOP_LEVEL) !~M" 'not top-level, non-automatic' \
+  "keep installed, even if nothing else depends on it" \
+  "marked automatic, which means it will be removed if no longer required, but otherwise kept" \
+  aptitude --prompt markauto
+
+user_run 'auto-abstop' "~i $NONSYSTEM $TOP_LEVEL !~Rsuggests:~i ~M" 'abs-top-level, automatic' \
+  "be automatically removed. Note: these will no longer show up here next time, which is what you want." \
+  "marked manual, which means it will be retained even if nothing else depends on it" \
+  aptitude --prompt unmarkauto
+
+user_run 'auto-top' "~i $NONSYSTEM $TOP_LEVEL ~M" 'top-level, automatic' \
+  "keep installed" \
+  "uninstalled. This shouldn't affect other packages not listed - i.e. the aptitude prompt that follows should not contain any {a} entries. If it does, you should have selected extra packages, and you should ABORT the command." \
+  aptitude --prompt remove
+
+user_run 'keep-config' '~c' 'uninstalled with configuration' \
+  "keep config files for" \
+  "purged" \
+  aptitude --prompt purge
+
+user_run 'block-rec' '~RBrecommends:~i' 'broken recommends' \
+  "keep uninstalled, even if recommended by another installed package" \
+  "installed" \
+  aptitude --prompt install
+
+user_run 'maybe-dummy' "~i $NONSYSTEM $TOP_LEVEL (~ddummy|~dtransitional|~d\"safely removed\")" 'possibly transitional or dummy packages' \
+  "keep installed, i.e. for which the heuristic we use is incorrect" \
+  "purged, since it is simply a dummy or transitional package" \
+  aptitude --prompt purge
