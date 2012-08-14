@@ -3,21 +3,25 @@ scheme: 2tier
 == backup: archive
 
 -- all
-# all files in these directories
+# everything in these directories
 /srv/pub/music
 /srv/pub/video
 
 == backup: current
 
 -- all
-# all files in these directories
+# everything in these directories
 /etc/passwd
 /etc/group
 /usr/local/bin
 /usr/local/sbin
 /var/spool/cron/crontabs
 /var/mail
-/var/www
+/var/www	exclude='/var/www/private'
+
+-- all_except_gitignore
+# everything in these directories, except gitignored stuff, but keep some of it
+/home/me/projects	/.settings /.project *.properties
 
 -- non_dpkg_configs
 # files in these directories that do not appear in dpkg's database

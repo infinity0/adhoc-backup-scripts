@@ -63,6 +63,23 @@ find_all() {
 	cat
 }
 
+find_all_except_gitignore() {
+	while read src keep; do
+		args=( $keep )
+		args=(${args[@]/#/-x\!\'})
+		args=(${args[@]/%/\'})
+		tmp=$(mktemp --tmpdir rsconf-XXXXXXXX)
+		# only exclude .gitignore entries
+		# keep locally-ignored stuff as that's probably important
+		# also keep stuff matching gitignore patterns in backup.list (negated-ignore in this case, since they are kept)
+		# also keep symlinks as they cost next to nothing to store
+		find "$src" -xtype d -name .git -execdir sh -c \
+		  'git ls-files -oi --directory --exclude-per-directory=.gitignore '"${args[*]}"' |
+		  { while read f; do test -h "$f" || echo "$PWD/$f"; done; }' \; > "$tmp"
+		echo "$src	exclude_file=$tmp"
+	done
+}
+
 find_non_dpkg_configs() {
 	while read x; do
 		find "$x";
