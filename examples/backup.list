@@ -4,8 +4,16 @@ scheme: 2tier
 
 -- all
 # everything in these directories
-/srv/pub/music
-/srv/pub/video
+/srv/pub/doc
+/srv/pub/pls
+
+-- meta_only
+# metadata for $path stored at $path.meta
+# <path> <sort key> <format; see find(1)>
+/srv/pub/music	1	%p
+/srv/pub/video	2	%s %p
+# default is 2	%s %p
+/srv/pub/misc
 
 == backup: current
 

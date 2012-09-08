@@ -9,7 +9,7 @@ SCRIPT_ROOT="$(dirname "$SCRIPT_SELF")"
 
 COMMENT_PREFIX='#'
 significant_lines() {
-	while read line; do
+	while read -r line; do
 		if [ -z "$line" ]; then continue; fi
 		if [ "$line" != "${line#$COMMENT_PREFIX}" ]; then continue; fi
 		echo "$line"
@@ -61,6 +61,15 @@ list_backup_parts() {
 
 find_all() {
 	cat
+}
+
+find_meta_only() {
+	while read -r src key format; do
+		key=${key:-2}
+		format=${format:-'%s %p'}
+		find "$src" -printf "$format"'\n' | sort -k"$key" > "$src.meta"
+		echo "$src.meta"
+	done
 }
 
 find_all_except_gitignore() {
