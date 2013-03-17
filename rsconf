@@ -130,6 +130,7 @@ generate_conf() {
 	cat <<-EOF
 	include_conf	$SCRIPT_ROOT/share/rsnapshot.inc
 	snapshot_root	$backup_root/$backup
+	lockfile	$backup_root/$backup/rsnapshot.pid
 
 	## Intervals
 
@@ -197,6 +198,7 @@ install_backup_spec )
 	EOF
 	list_backups "$scheme" | while read backup; do
 		echo "RS_CONF=$backup_root/$backup.conf"
+		echo "RS_ROOT=$backup_root/$backup"
 		get_backup_part "$scheme" "$backup" CRONTAB | tail -n+2
 	done
 	} | tee "$backup_root/rsnapshot.crontab"

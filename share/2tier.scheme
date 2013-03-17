@@ -10,7 +10,7 @@ retain	weekly	6
 retain	quarter	20
 
 -- CRONTAB
-45  5  *  *  *	rsnapshot -c $RS_CONF sync && rsnapshot -c $RS_CONF daily
+45  5  *  *  *	rsnapshot -c $RS_CONF sync && touch $RS_ROOT/lastsync && rsnapshot -c $RS_CONF daily
 44  5  *  *  0	rsnapshot -c $RS_CONF weekly
 43  5  1 */3 *	rsnapshot -c $RS_CONF quarter
 
@@ -24,7 +24,7 @@ retain	monthly	12
 retain	yearly	5
 
 -- CRONTAB
-25  6  *  *  0	rsnapshot -c $RS_CONF sync && rsnapshot -c $RS_CONF weekly
+25  6  *  *  0	rsnapshot -c $RS_CONF sync && touch $RS_ROOT/lastsync && rsnapshot -c $RS_CONF weekly
 24  6  1  *  *	rsnapshot -c $RS_CONF monthly
 23  6  1  8  *	rsnapshot -c $RS_CONF yearly
 
