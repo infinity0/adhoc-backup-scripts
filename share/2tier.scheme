@@ -4,6 +4,9 @@
 
 For small data that changes often, e.g. project work, config files
 
+-- PERIOD
+86400
+
 -- RETAIN
 retain	daily	28
 retain	weekly	6
@@ -17,6 +20,9 @@ retain	quarter	20
 == backup: archive
 
 For large static data that doesn't change often, e.g. media
+
+-- PERIOD
+604800
 
 -- RETAIN
 retain	weekly	4
