@@ -35,19 +35,14 @@
 # $ git clone <url> && git-etc init
 # $ git-etc install
 
-HOST="${HOST:-.}"
 
-HOST_ABS=$(readlink -f "$HOST")
-HOST_BIND="$HOST/.bind"
-TMP_BIND="$HOST/.bind.tmp"
-TMP_MTAB="$HOST/.mtab.tmp"
-
-
+ERR_HOST_NOT_GIT=13
 ERR_HOST_NOT_DIR=14
 ERR_BIND_NOT_FILE=15
 ERR_MTAB_SYMLINK=16
 ERR_REPO_NOT_GITETC=17
 ERR_BOUND_INCOMPLETE=18
+ERR_PWD_IN_HOST=19
 ERR_NO_TARGET_OR_SOURCE=20
 ERR_BINDPOINT_L_NOTSUPPORTED=23
 ERR_BINDPOINT_NOT_FLD=24
@@ -60,18 +55,45 @@ ERR_DUPES_MTAB=33
 ERR_GIT_META_NOT_FOUND=36
 ERR_PERL_LCHOWN_NOT_FOUND=37
 
-
-# clean up temp files
-trap 'rm -f '"$TMP_BIND"' '"$TMP_MTAB" EXIT INT TERM
 set -o errexit
 
+auto_find_host() {
+	local host="$PWD"
+	local found=false
+	while [ "$host" != / ]; do
+		host="$(dirname "$host")"
+		if [ -f "$host/.bind" ]; then found=true; break; fi
+	done
+	$found && echo "$host" || echo "$PWD"
+}
 
-pre_test() {
+init_env() {
+	HOST="$(test -n "$1" && echo "$1" || auto_find_host)"
+	HOST_ABS=$(readlink -f "$HOST")
+	HOST_BIND="$HOST/.bind"
+	TMP_BIND="$HOST/.bind.tmp"
+	TMP_MTAB="$HOST/.mtab.tmp"
+
+	# clean up temp files
+	trap 'rm -f '"$TMP_BIND"' '"$TMP_MTAB" EXIT INT TERM
+
 	if [ ! -d "$HOST_ABS" ]; then
 		echo >&2 "not a directory: $HOST_ABS"
 		exit $ERR_HOST_NOT_DIR
 	fi
 
+	cd "$HOST_ABS"
+	GIT_DIR="$HOST_ABS/$(
+	if ! git rev-parse --git-dir; then
+		echo >&2 "not controlled by git: $HOST_ABS"
+		exit $ERR_HOST_NOT_GIT
+	fi
+	)"
+	cd "$OLDPWD"
+	export GIT_DIR
+}
+
+pre_test() {
 	if [ "/proc/mounts" = "$(readlink /etc/mtab)" ]; then
 		cat >&2 <<-EOF
 		/etc/mtab is a symlink to /proc/mounts. This means bind-mount information isn't
@@ -87,9 +109,18 @@ pre_test() {
 		exit $ERR_MTAB_SYMLINK
 	fi
 
-	if ! grep -Rq "git meta" "$(git rev-parse --git-dir)/hooks"; then
+	if ! grep -Rq "git meta" "$GIT_DIR/hooks"; then
 		echo >&2 "not a git-etc-enabled git repo. run $0 init to fix this."
 		exit $ERR_REPO_NOT_GITETC
+	fi
+}
+
+bind_test() {
+	# when doing a bind/unbind, exit if $PWD is inside $HOST_ABS
+	local curdir=$(pwd -P)
+	if [ "${curdir#$HOST_ABS/}" != "$curdir" ]; then
+		echo >&2 "cd to $HOST_ABS before attempting to operate on it"
+		exit $ERR_PWD_IN_HOST
 	fi
 }
 
@@ -235,6 +266,7 @@ err_symlink_not_supported() {
 }
 
 do_bind() {
+	# this doesn't call bind_test, so prefer gitetc_bind
 	local source="$1"
 	local target="$HOST/$source"
 	if [ -e "$target" ]; then
@@ -251,6 +283,7 @@ do_bind() {
 }
 
 do_unbind() {
+	# this doesn't call bind_test, so prefer gitetc_unbind
 	local source="$1"
 	local target="$HOST/$source"
 	sudo umount "$target"
@@ -304,10 +337,10 @@ gitetc_track() {
 		gitetc_unbind
 	fi
 	# TODO: prevent when a parent of $source already exists
-	# TODO: prevent when a child of $source already exists, or give
-	# option to remove child
+	# TODO: prevent when a child of $source already exists, or give option to remove child
+	# both of these should allow us to get rid of the sorts in unbind/bind, and the unbind-then-bind complexity here
 	local source="$(readlink -f "$(dirname "$1")")/$(basename "$1")"
-	if [ "$source" != "$1" ]; then
+	if [ "$source" != "${1%/}" ]; then
 		echo >&2 "source traverses symlinks: $source"
 		echo >&2 "we only store canonical paths or the symlink itself"
 		exit $ERR_SOURCE_TRAVERSES_LINKS
@@ -328,12 +361,14 @@ gitetc_track() {
 }
 
 gitetc_unbind() {
+	bind_test
 	if is_bound; then
 		sort_bind -r | p_with_bind bind_source_apply do_unbind
 	fi
 }
 
 gitetc_bind() {
+	bind_test
 	if ! is_bound; then
 		sort_bind | p_with_bind bind_source_apply do_bind
 	fi
@@ -348,7 +383,7 @@ gitetc_status() {
 }
 
 gitetc_init() {
-	local h="$(git rev-parse --git-dir)/hooks"
+	local h="$GIT_DIR/hooks"
 	if ! git config --get alias.meta > /dev/null; then
 		echo >&2 "you need to setup a git alias 'meta' to point to the setgitperms.perl script. "
 		echo >&2 "note: you are advised to use the -n option, which saves user/group names "
@@ -371,20 +406,35 @@ gitetc_install() {
 	git checkout .  # re-init index with user's own perms
 }
 
-subcmd="$1"
-shift
+USAGE="Usage: $0 [-r <root>] [-h] <subcmd> [<args>]"
+
+while getopts r:h o; do
+	case $o in
+	r ) ROOT="$OPTARG";;
+	h ) subcmd=help;;
+	\? ) subcmd=?;;
+	esac
+done
+shift `expr $OPTIND - 1`
+
+subcmd="${subcmd:-$1}"
+subcmd="${subcmd:-?}"
 
 case $subcmd in
 init)
+	shift
+	init_env "$ROOT"
 	"gitetc_$subcmd" "$@"
 	;;
 status|track|untrack|bind|unbind|install)
+	shift
+	init_env "$ROOT"
 	pre_test
 	"gitetc_$subcmd" "$@"
 	;;
 help)
 	cat <<EOF
-Usage: [<VAR>=<value>] $0 <subcmd> [<args>]
+$USAGE
 
 subcommands (git repo):
 init                set up this repo as a git-etc repo (add hooks, etc)
@@ -397,8 +447,13 @@ untrack <source>    remove a dir/file from the mirror (TODO implement this)
 bind                add bind mounts for the mirror's contents
 unbind              remove bind mounts for the mirror's contents
 
-environment variables:
-HOST                path to the root of the mirror (default .)
+options:
+-r <ROOT>           path to the base of the mirror. defaults to the nearest
+                    ancestor directory with a .bind file, or else \$PWD.
 EOF
+	;;
+*)
+	echo >&2 "$USAGE"
+	exit 2
 	;;
 esac
