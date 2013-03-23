@@ -8,14 +8,14 @@ For small data that changes often, e.g. project work, config files
 86400
 
 -- RETAIN
-retain	daily	28
-retain	weekly	6
-retain	quarter	20
+daily	28
+weekly	6
+quarter	20
 
 -- CRONTAB
-45  5  *  *  *	rsnapshot -c $RS_CONF sync && touch $RS_ROOT/lastsync && rsnapshot -c $RS_CONF daily
-44  5  *  *  0	rsnapshot -c $RS_CONF weekly
-43  5  1 */3 *	rsnapshot -c $RS_CONF quarter
+daily	45  5  *  *  *
+weekly	44  5  *  *  0
+quarter	43  5  1 */3 *
 
 == backup: archive
 
@@ -25,12 +25,12 @@ For large static data that doesn't change often, e.g. media
 604800
 
 -- RETAIN
-retain	weekly	4
-retain	monthly	12
-retain	yearly	5
+weekly	4
+monthly	12
+yearly	5
 
 -- CRONTAB
-25  6  *  *  0	rsnapshot -c $RS_CONF sync && touch $RS_ROOT/lastsync && rsnapshot -c $RS_CONF weekly
-24  6  1  *  *	rsnapshot -c $RS_CONF monthly
-23  6  1  8  *	rsnapshot -c $RS_CONF yearly
+weekly	25  6  *  *  0
+monthly	24  6  1  *  *
+yearly	23  6  1  8  *
 

@@ -163,12 +163,39 @@ generate_conf() {
 	## Intervals
 
 	sync_first	1
-	$(get_backup_part "$scheme" "$backup" RETAIN)
+	$(get_backup_part "$scheme" "$backup" RETAIN | significant_lines | while read level num; do
+		echo "retain	$level	$num"
+	done)
 
 	## Backup points
 
 	include_conf	\`$SCRIPT_SELF backup_list_points "$backup_root/backup.list" "$backup"\`
 	EOF
+}
+
+generate_crontab() {
+	local backup_root="$1"
+	local scheme="$2"
+	cat <<-EOF
+	# See \`man rsnapshot\` for details
+	# The "rsnapshot sync" section is especially useful for these entries
+	RS=$(which rsnapshot)
+
+	EOF
+	list_backups "$scheme" | while read backup; do
+		echo "RS_ROOT=$backup_root/$backup"
+		echo "RS_CONF=$backup_root/$backup.conf"
+		local first=true
+		get_backup_part "$scheme" "$backup" CRONTAB | significant_lines | while read level cron; do
+			if $first; then
+				echo "$cron"'	$RS -c $RS_CONF sync && /bin/touch $RS_ROOT/lastsync && $RS -c $RS_CONF '"$level"
+				first=false
+			else
+				echo "$cron"'	$RS -c $RS_CONF '"$level"
+			fi
+		done
+		echo
+	done
 }
 
 install_conf() {
@@ -186,18 +213,7 @@ install_conf() {
 	done || exit $?
 	echo "all configs passed!"
 	echo_file_start "$backup_root/rsnapshot.crontab"
-	{
-	cat <<-EOF
-	# See \`man rsnapshot\` for details
-	# The "rsnapshot sync" section is especially useful for these entries
-
-	EOF
-	list_backups "$scheme" | while read backup; do
-		echo "RS_ROOT=$backup_root/$backup"
-		echo "RS_CONF=$backup_root/$backup.conf"
-		get_backup_part "$scheme" "$backup" CRONTAB
-	done
-	} | tee "$backup_root/rsnapshot.crontab"
+	generate_crontab "$backup_root" "$scheme" | tee "$backup_root/rsnapshot.crontab"
 	echo_file_end
 	read -p "To install this crontab now, copy it into your clipboard then hit Y: [y/N]" x
 	if [ "$x" = "y" -o "$x" = "Y" ]; then
@@ -244,7 +260,7 @@ backup_list_points )
 		  | "find_$section" | make_backup_points "./"
 	done
 	;;
-generate_conf | install_conf | check_status )
+generate_conf | generate_crontab | install_conf | check_status )
 	"$subcmd" "$@"
 	;;
 test_find_method )
