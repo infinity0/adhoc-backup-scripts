@@ -1,8 +1,8 @@
 #!/bin/bash
 # Simplify and clean up redundant or incorrect APT package state.
 STATE=apt-clean.txt
-test -f "$STATE" || { touch "$STATE" || exit 5; }
-test -w "$STATE" || exit 6;
+
+abort() { local x="$1"; shift; echo >&2 "$@"; exit "$x"; }
 
 save_state() {
 	if grep -q '^\['"$1"'\]' "$STATE"; then
@@ -25,15 +25,14 @@ maybe_invert() {
 	if [ "$x" = "_" ]; then
 		comm -13 <(sort) "$1"
 	else
-		echo "$x"
-		sort
+		{ echo "$x"; cat; } | sort
 	fi
 }
 
 # old stdout (tty) must be saved to fd 3 before calling this
 user_select() {
 	local tag="$1" query="$2" title="$3" sel="$4" sweep="$5"
-	aptitude search --disable-columns -F '%p %d' "$query" | {
+	aptitude search --disable-columns -F '%p %d' "$query" | sort -k1 | {
 	local args=( "_" "INVERT SELECTION" "" )
 	local namesf=$(mktemp --tmpdir=/dev/shm apt-clean.XXXXXXXXXX)
 	while read name desc; do
@@ -60,39 +59,115 @@ user_select() {
 
 user_run() {
 	exec 3>&1 # save stdout for user_select
-	xargs -r -a <(user_select "${@:1:5}") "${@:6}"
-	read -p "press any key to continue..." x
+	xargs --verbose -r -a <(user_select "${@:1:5}" | tee "$STATE.round") "${@:6}"
+	local X=$?
+	read -p "Step \"$1\" complete; examine in sub-shell? [y/N] " x
+	if [ "$x" = "y" ]; then "$SHELL"; fi
+	if [ "$X" = 0 -a -s "$STATE.round" ]; then
+		return 119 # a code that xargs does not use
+	else
+		return $X
+	fi
 }
 
-NONSYSTEM='!~prequired !~pimportant !~E'
+git_commit_state() {
+	local q="$1"
+	local msg="$2"
+	shift 2
+	read -p "$q [y/N] " x
+	if [ "$x" = "y" ]; then
+		"$@"
+		git add "$STATE"
+		git commit -m "apt-clean: $msg"
+	fi
+}
+
+ESSENTIAL='~prequired|~pimportant|~E'
 TOP_LEVEL='!~Rpredepends:~i !~Rdepends:~i !~Rrecommends:~i'
+ABS_TOP_LEVEL="$TOP_LEVEL"' !~Rsuggests:~i'
+CUR_ARCH='~r'"$(dpkg --print-architecture)"
 
-user_run 'manual' "~i $NONSYSTEM !($TOP_LEVEL) !~M" 'not top-level, non-automatic' \
-  "keep installed, even if nothing else depends on it" \
+LOCALITY_CAVEAT="This shouldn't affect other packages not listed here - i.e. the aptitude prompt that follows should not contain any {a} entries. If it does, then our heuristic was incorrect and you should have selected extra packages; you should abort the command by selecting NO; the script will revisit this step again"
+
+USING_GIT=false
+
+touch "$STATE" "$STATE.tmp" "$STATE.round" || abort 3 "cannot write to one of $STATE{,.tmp,.round}"
+cleanup() { rm -f "$STATE.tmp" "$STATE.round" 2>/dev/null; exit; }
+trap cleanup EXIT
+
+test -z "$(aptitude search "(~prequired|~E) $CUR_ARCH !~i")" || abort 4 "Your system appears to be FUBAR, try `aptitude install '(~prequired|~E) $CUR_ARCH'`."
+test -n "$(git ls-tree HEAD -- "$STATE")" && USING_GIT=true
+
+if ! $USING_GIT; then
+	echo >&2 "warning: $STATE is not controlled by git"
+	git_commit_state "automatically add to existing (or else new) git repo?" "initialise" git init
+	read -p "press any key to continue" x
+	test -n "$(git ls-tree HEAD -- "$STATE")" && USING_GIT=true
+fi
+
+while $imperfect; do
+imperfect=false
+
+user_run 'manual-sub' "~i !($ESSENTIAL) !($TOP_LEVEL) !~M" 'not top-level, non-automatic' \
+  "keep installed, even if (theoretically, in the future) nothing else depends on it" \
   "marked automatic, which means it will be removed if no longer required, but otherwise kept" \
-  aptitude --prompt markauto
+  aptitude --prompt markauto \
+  || imperfect=true
 
-user_run 'auto-abstop' "~i $NONSYSTEM $TOP_LEVEL !~Rsuggests:~i ~M" 'abs-top-level, automatic' \
+user_run 'auto-abstop' "~i !($ESSENTIAL) $ABS_TOP_LEVEL ~M" 'abs-top-level, automatic' \
   "be automatically removed. Note: these will no longer show up here next time, which is what you want." \
   "marked manual, which means it will be retained even if nothing else depends on it" \
-  aptitude --prompt unmarkauto
+  aptitude --prompt unmarkauto \
+  || imperfect=true
 
-user_run 'auto-top' "~i $NONSYSTEM $TOP_LEVEL ~M" 'top-level, automatic' \
+user_run 'auto-top' "~i !($ESSENTIAL) $TOP_LEVEL ~M" 'top-level, automatic' \
   "keep installed" \
-  "uninstalled. This shouldn't affect other packages not listed - i.e. the aptitude prompt that follows should not contain any {a} entries. If it does, you should have selected extra packages, and you should ABORT the command." \
-  aptitude --prompt remove
+  "uninstalled. $LOCALITY_CAVEAT" \
+  aptitude --prompt remove \
+  || imperfect=true
 
-user_run 'keep-config' '~c' 'uninstalled with configuration' \
+user_run 'keep-config' '~c' 'uninstalled but with configuration' \
   "keep config files for" \
   "purged" \
-  aptitude --prompt purge
+  aptitude --prompt purge \
+  || imperfect=true
 
 user_run 'block-rec' '~RBrecommends:~i' 'broken recommends' \
   "keep uninstalled, even if recommended by another installed package" \
   "installed" \
-  aptitude --prompt install
+  aptitude --prompt install \
+  || imperfect=true
 
-user_run 'maybe-dummy' "~i $NONSYSTEM $TOP_LEVEL (~ddummy|~dtransitional|~d\"safely removed\")" 'possibly transitional or dummy packages' \
+user_run 'block-imp' "~pimportant $CUR_ARCH !~i" 'uninstalled important packages' \
+  "keep uninstalled, which should only be packages where a functional alternative (e.g. a different version or flavour) is already installed" \
+  "installed" \
+  aptitude --prompt install \
+  || imperfect=true
+
+user_run 'maybe-dummy' "~i !($ESSENTIAL) $TOP_LEVEL (~ddummy|~dtransitional|~d\"safely removed\")" 'possibly transitional or dummy packages' \
   "keep installed, i.e. for which the heuristic we use is incorrect" \
-  "purged, since it is simply a dummy or transitional package" \
-  aptitude --prompt purge
+  "purged, since it is simply a dummy or transitional package. $LOCALITY_CAVEAT" \
+  aptitude --prompt purge \
+  || imperfect=true
+
+user_run 'manual-top' "~i !($ESSENTIAL) $TOP_LEVEL !~M" 'top-level, non-automatic' \
+  "keep installed, even if nothing else depends on it" \
+  "removed, which may cause other autoremovals and this script to return back to the first step" \
+  aptitude --prompt remove \
+  || imperfect=true
+
+if $imperfect; then
+	echo "This round caused some changes and/or exposed some problems; running again to iron out newly-uncovered issues and/or to fix those problems."
+fi
+
+done
+
+echo "Running one final cleanup. It should not do anything unexpected; if it does, then abort and re-run this script."
+aptitude --prompt install
+
+echo "apt-clean done."
+
+if $USING_GIT && ! git diff --quiet; then
+	git diff
+	git_commit_state "commit changes?" "update package state"
+fi
