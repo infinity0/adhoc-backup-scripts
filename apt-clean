@@ -5,6 +5,7 @@ STATE=apt-clean.txt
 abort() { local x="$1"; shift; echo >&2 "$@"; exit "$x"; }
 
 save_state() {
+	# TODO(infinity0): don't save empty section
 	if grep -q '^\['"$1"'\]' "$STATE"; then
 		# blank between "[$1]" and "[!$1]||<EOF>"
 		awk '(/\[/ && !/\['"$1"'\]/ || 0){f=0} !f; /\['"$1"'\]/{f=1}' "$STATE" > "$STATE.tmp"
@@ -20,6 +21,7 @@ read_state() {
 	awk '/\['"$1"'\]/{f=1} (/\[/ && !/\['"$1"'\]/ || 0){f=0} f' "$STATE"
 }
 
+# Either output &1, or (if the first item is "_") $1 \ &1.
 maybe_invert() {
 	read x
 	if [ "$x" = "_" ]; then
@@ -29,7 +31,14 @@ maybe_invert() {
 	fi
 }
 
-# old stdout (tty) must be saved to fd 3 before calling this
+# Execute a query and ask the user to select a subset to "keep" i.e. do nothing
+# with. This selection is saved to STATE, and everything else is output for
+# further processing.
+#
+# old stdout (tty) must be saved to fd 3 before calling, e.g. with `exec 3>&1`
+#
+# Note that NOP-on-select means it's not essential to backup the existing state
+# when saving. If you use break this contract, this will not be the case.
 user_select() {
 	local tag="$1" query="$2" title="$3" sel="$4" sweep="$5"
 	aptitude search --disable-columns -F '%p %d' "$query" | sort -k1 | {
@@ -48,7 +57,7 @@ user_select() {
 
 	rm -f "$STATE.tmp"
 	if dialog --output-fd 4 --separate-output \
-	  --title "$title" --checklist "Select everything that you would like to $sel.\nEverything else will be $sweep." \
+	  --title "$title" --checklist "Select items that you would like to $sel.\n\nEverything else will be $sweep." \
 	  43 132 40 "${args[@]}" 4> >(maybe_invert "$namesf" | save_state "$tag") >&3; then
 		while [ -f "$STATE.tmp" ]; do sleep 0.1; done
 		# aptitude sorts differently
@@ -87,7 +96,7 @@ TOP_LEVEL='!~Rpredepends:~i !~Rdepends:~i !~Rrecommends:~i'
 ABS_TOP_LEVEL="$TOP_LEVEL"' !~Rsuggests:~i'
 CUR_ARCH='~r'"$(dpkg --print-architecture)"
 
-LOCALITY_CAVEAT="This shouldn't affect other packages not listed here - i.e. the aptitude prompt that follows should not contain any {a} entries. If it does, then our heuristic was incorrect and you should have selected extra packages; you should abort the command by selecting NO; the script will revisit this step again"
+LOCALITY_CAVEAT="This shouldn't affect other packages not listed here - i.e. the aptitude prompt that follows should not contain any non-trivial {a} entries. If it does, then you should have selected extra packages - abort the command by selecting NO, and we will schedule another round for you to fix the problem"
 
 USING_GIT=false
 
@@ -115,14 +124,14 @@ user_run 'manual-sub' "~i !($ESSENTIAL) !($TOP_LEVEL) !~M" 'not top-level, non-a
   || imperfect=true
 
 user_run 'auto-abstop' "~i !($ESSENTIAL) $ABS_TOP_LEVEL ~M" 'abs-top-level, automatic' \
-  "be automatically removed. Note: these will no longer show up here next time, which is what you want." \
+  "be automatically removed. They will no longer show up here next time, which is what you want" \
   "marked manual, which means it will be retained even if nothing else depends on it" \
   aptitude --prompt unmarkauto \
   || imperfect=true
 
 user_run 'auto-top' "~i !($ESSENTIAL) $TOP_LEVEL ~M" 'top-level, automatic' \
-  "keep installed" \
-  "uninstalled. $LOCALITY_CAVEAT" \
+  "keep automatically installed as a result of a suggestion.\n  - If you want to make these unconditionally manually installed, you should 'aptitude unmarkauto' these later, and re-run this script" \
+  "uninstalled.\n  - $LOCALITY_CAVEAT" \
   aptitude --prompt remove \
   || imperfect=true
 
@@ -133,7 +142,7 @@ user_run 'keep-config' '~c' 'uninstalled but with configuration' \
   || imperfect=true
 
 user_run 'block-rec' '~RBrecommends:~i' 'broken recommends' \
-  "keep uninstalled, even if recommended by another installed package" \
+  "keep uninstalled, even if recommended by another installed package.\n  - You might do this if e.g. it takes up too much space, or it conflicts with another installed package" \
   "installed" \
   aptitude --prompt install \
   || imperfect=true
@@ -145,14 +154,14 @@ user_run 'block-imp' "~pimportant $CUR_ARCH !~i" 'uninstalled important packages
   || imperfect=true
 
 user_run 'maybe-dummy' "~i !($ESSENTIAL) $TOP_LEVEL (~ddummy|~dtransitional|~d\"safely removed\")" 'possibly transitional or dummy packages' \
-  "keep installed, i.e. for which the heuristic we use is incorrect" \
-  "purged, since it is simply a dummy or transitional package. $LOCALITY_CAVEAT" \
+  "keep installed, i.e. for which the heuristic (simple regex) we use here is incorrect" \
+  "purged, since it is simply a dummy or transitional package.\n  - $LOCALITY_CAVEAT" \
   aptitude --prompt purge \
   || imperfect=true
 
 user_run 'manual-top' "~i !($ESSENTIAL) $TOP_LEVEL !~M" 'top-level, non-automatic' \
   "keep installed, even if nothing else depends on it" \
-  "removed, which may cause other autoremovals and this script to return back to the first step" \
+  "removed, which may benignly cause other autoremovals and another round to be executed" \
   aptitude --prompt remove \
   || imperfect=true
 

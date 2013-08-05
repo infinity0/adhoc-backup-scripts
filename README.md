@@ -44,6 +44,7 @@ You may also need to patch rsnapshot:
 - if using upstream 1.3.1, you need to apply [r401][], [r406][]
 - if using debian 1.3.1-1, you need to apply [r401][], [r406][]
 - if using debian 1.3.1-2 or -3, you need to apply [r406][]
+- if using debian 1.3.1-4, you can use this with no further patches
 
 [r401]: http://rsnapshot.cvs.sourceforge.net/viewvc/rsnapshot/rsnapshot/rsnapshot-program.pl?r1=1.400&r2=1.401&view=patch
 [r406]: http://rsnapshot.cvs.sourceforge.net/viewvc/rsnapshot/rsnapshot/rsnapshot-program.pl?r1=1.405&r2=1.406&view=patch
@@ -298,8 +299,47 @@ Simplify and clean up redundant or incorrect APT package state.
 Over the lifetime of a Debian installation, the APT package state can become
 cluttered with redundant or "incorrect" (from a human point of view) state. This
 can interfere with its dependency resolution algorithms, which makes upgrading
-(both manual and automatic) much harder. These problems stem from certain
-intrinsic facts:
+(both manual and automatic) much harder. See issues section for details.
+
+In the program's terminology, "top-level" refers to an installed package that is
+not predependant on / dependant on / recommended by another installed package,
+and "absolute top-level" refers to the subset that are additionally also not
+suggested by another installed package.
+
+## Pre-use
+
+Depends: aptitude, dialog, git
+
+## Use
+
+Run as root and follow the instructions, which should be self-explanatory. It
+will save your answers into `$PWD/apt-clean.txt`, so make sure that is writable.
+This is a subset of your APT package state that is "interesting" from a human
+perspective. (This is somewhat subjective and based on about 5 years of me
+adminstrating various Debian systems; those familiar with the APT object model
+are welcome to read the source and file pull requests for improvements.)
+
+The cleanup proceeds in rounds; each round consists of a series of steps, and
+the program will execute successive identical rounds until no changes are
+detected. Each step represents a type of installation profile (for lack of a
+better word), e.g. "automatically installed top-level packages". You are asked
+to identify the subset that intentionally belongs to that profile, as opposed
+to being an accidental by-product of the issues below. Pay attention to the
+instructions on how to achieve this; it encourages you to eliminate redundancy.
+
+The first time you run this program, your APT state is likely to be very untidy
+and it will require the most effort to clean up. However, once you figure out
+the initial non-redunant clean state file, subsequent runs of this program will
+require much less effort to detect new redundancies or untidiness.
+
+Note: if you terminate the program with ctrl-C, your terminal will probably be
+a bit screwed. Simply run `reset` (part of ncurses, which is a dependency of
+dialog) and it will go back to normal. Even if you can't see those characters,
+typing `<ctrl-C> reset <enter>` should hopefully work.
+
+## Issues
+
+Issues with APT/aptitude:
 
 - Imperfect manual maintenance
 	- If you are manually trying to resolve dependencies, it's very common to run
@@ -322,36 +362,27 @@ intrinsic facts:
 	- Because of this, it is not implausible that the dependency resolver algorithm
 	  makes different assumptions in different cases, which can result in undesired
 	  or (from a higher point of view) "inconsistent" package state.
+	- There have been many bugs in APT/aptitude relating to "auto" flags being
+	  cleared en-masse or otherwise corrupted. There are too many to list; at the time
+	  of writing, a debian bugs search on aptitude for "auto" gave ~50 results, of
+	  with ~20 was relevant to this.
 
 Dealing with these issues manually requires a deep understanding of the APT
 object model, and even then it's very tedious to remember which search patterns
 to use to do the job correctly. This tool aims to automate much of the process,
 by giving natural-language descriptions of these issues and instructions on how
-to proceed, and also remembers your previous answers to avoid repetition.
-
-Even though the functionality is not quite the same as `git-apt`, I wrote the
-latter to help with the problem described above, so I may combine the two at
-some point in the future.
-
-## Pre-use
-
-Depends: aptitude, dialog
-
-## Use
-
-Run as root and follow the instructions, which should be self-explanatory. It
-will save your answers into `$PWD/apt-clean.txt`, so make sure that is writable.
-
-Note: if you terminate the program with ctrl-C, your terminal will probably be
-a bit screwed. Simply run `reset` (part of ncurses, which is a dependency of
-dialog) and it will go back to normal. Even if you can't see those characters,
-typing `<ctrl-C> reset <enter>` should hopefully work.
+to proceed, and also puts your previous answers under version control both to
+avoid repetition and data corruption due to APT/aptitude bugs.
 
 ----
 
 # git-apt
 
 Keeps track of the "interesting" parts of APT package state.
+
+NOTE: apt-clean now includes the core functionality of this script. The
+remaining functionality (querying the "interesting" state) will probably be
+added to it too in the future. So you may consider this script deprecated.
 
 ## Pre-use
 
