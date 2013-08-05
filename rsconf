@@ -113,7 +113,7 @@ find_updated_dpkg_configs() {
 
 find_nonexistent_to_delete() {
 	while read src; do
-		echo "$src	+rsync_long_args=\"--existing\""
+		echo "$src	+rsync_long_args=--existing"
 	done
 }
 
