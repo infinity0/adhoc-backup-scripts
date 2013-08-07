@@ -1,6 +1,5 @@
 #!/bin/bash
 # Simplify and clean up redundant or incorrect APT package state.
-STATE=apt-clean.txt
 
 abort() { local x="$1"; shift; echo >&2 "$@"; exit "$x"; }
 
@@ -43,7 +42,7 @@ maybe_invert() {
 # old stdout (tty) must be saved to fd 3 before calling, e.g. with `exec 3>&1`
 user_select() {
 	local tag="$1" query="$2" title="$3" sel="$4" sweep="$5"
-	aptitude search --disable-columns -F '%p %d' "$query" | sort -k1 | {
+	aptitude search --disable-columns -F '%p %d' "!~v $query" | sort -k1 | {
 	local args=( "_" "INVERT SELECTION" "" )
 	local namesf=$(mktemp --tmpdir=/dev/shm apt-clean.XXXXXXXXXX)
 	local hasnew=false
@@ -118,7 +117,7 @@ CUR_ARCH='~r'"$(dpkg --print-architecture)"
 
 LOCALITY_CAVEAT="This shouldn't affect other packages not listed here - i.e. the aptitude prompt that follows should not contain any non-trivial {a} entries. If it does, then you should have selected extra packages - abort the command by selecting NO, and we will schedule another round for you to fix the problem"
 
-USAGE="Usage: $0 [-r <root>] [-h] <subcmd> [<args>]"
+USAGE="Usage: $0 [-a|-s|-h] <STATE>"
 
 # runtime vars
 SKIP_FULL=false
@@ -147,6 +146,7 @@ while getopts ash o; do
 done
 shift `expr $OPTIND - 1`
 
+STATE=${1:-apt-clean.txt}
 touch "$STATE" "$STATE.tmp" "$STATE.round" || abort 3 "cannot write to one of $STATE{,.tmp,.round}"
 cleanup() { rm -f "$STATE.tmp" "$STATE.round" 2>/dev/null; exit; }
 trap cleanup EXIT
