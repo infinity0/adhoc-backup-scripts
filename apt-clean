@@ -4,8 +4,9 @@ STATE=apt-clean.txt
 
 abort() { local x="$1"; shift; echo >&2 "$@"; exit "$x"; }
 
+# Save to $STATE.new - we can't save to $STATE directly because dialog provides
+# no way to distinguish between empty output vs operation cancelled.
 save_state() {
-	# TODO(infinity0): don't save empty section
 	if grep -q '^\['"$1"'\]' "$STATE"; then
 		# blank between "[$1]" and "[!$1]||<EOF>"
 		awk '(/\[/ && !/\['"$1"'\]/ || 0){f=0} !f; /\['"$1"'\]/{f=1}' "$STATE" > "$STATE.tmp"
@@ -13,7 +14,11 @@ save_state() {
 	else
 		cat "$STATE" <(echo "[$1]"; cat; echo;) >> "$STATE.tmp"
 	fi
-	mv "$STATE.tmp" "$STATE"
+	mv "$STATE.tmp" "$STATE.new"
+}
+
+commit_state() {
+	cat <"$STATE.new" >"$STATE" && rm -f "$STATE.new"
 }
 
 read_state() {
@@ -36,18 +41,18 @@ maybe_invert() {
 # further processing.
 #
 # old stdout (tty) must be saved to fd 3 before calling, e.g. with `exec 3>&1`
-#
-# Note that NOP-on-select means it's not essential to backup the existing state
-# when saving. If you use break this contract, this will not be the case.
 user_select() {
 	local tag="$1" query="$2" title="$3" sel="$4" sweep="$5"
 	aptitude search --disable-columns -F '%p %d' "$query" | sort -k1 | {
 	local args=( "_" "INVERT SELECTION" "" )
 	local namesf=$(mktemp --tmpdir=/dev/shm apt-clean.XXXXXXXXXX)
+	local hasnew=false
 	while read name desc; do
 		local mark=off
 		if read_state "$tag" | grep -qxF "$name"; then
 			mark=on
+		else
+			hasnew=true
 		fi
 		args+=( "$name" "$desc" "$mark" )
 		echo "$name" >> "$namesf"
@@ -55,11 +60,22 @@ user_select() {
 	sort "$namesf" -o "$namesf"
 	if ! [ -s "$namesf" ]; then return; fi
 
+	# skip dialog if everything already selected
+	if $SKIP_FULL && ! $hasnew; then
+		# discard previously-selected entries that are no longer valid i.e.
+		# didn't show up in the query. the `git diff` will reveal them anyway.
+		comm -12 "$namesf" <(read_state "$tag" | sort) | save_state "$tag"
+		commit_state
+		return
+	fi
+
 	rm -f "$STATE.tmp"
 	if dialog --output-fd 4 --separate-output \
 	  --title "$title" --checklist "Select items that you would like to $sel.\n\nEverything else will be $sweep." \
 	  43 132 40 "${args[@]}" 4> >(maybe_invert "$namesf" | save_state "$tag") >&3; then
+		# sleep because save_state happens in bg
 		while [ -f "$STATE.tmp" ]; do sleep 0.1; done
+		commit_state
 		# aptitude sorts differently
 		comm -23 "$namesf" <(read_state "$tag" | sort)
 	fi
@@ -70,8 +86,12 @@ user_run() {
 	exec 3>&1 # save stdout for user_select
 	xargs --verbose -r -a <(user_select "${@:1:5}" | tee "$STATE.round") "${@:6}"
 	local X=$?
-	read -p "Step \"$1\" complete; examine in sub-shell? [y/N] " x
-	if [ "$x" = "y" ]; then "$SHELL"; fi
+	if $AUTO_NEXT; then
+		echo "step \"$1\" complete."
+	else
+		read -p "step \"$1\" complete; examine in sub-shell? [y/N] " x
+		if [ "$x" = "y" ]; then "$SHELL"; fi
+	fi
 	if [ "$X" = 0 -a -s "$STATE.round" ]; then
 		return 119 # a code that xargs does not use
 	else
@@ -98,7 +118,34 @@ CUR_ARCH='~r'"$(dpkg --print-architecture)"
 
 LOCALITY_CAVEAT="This shouldn't affect other packages not listed here - i.e. the aptitude prompt that follows should not contain any non-trivial {a} entries. If it does, then you should have selected extra packages - abort the command by selecting NO, and we will schedule another round for you to fix the problem"
 
+USAGE="Usage: $0 [-r <root>] [-h] <subcmd> [<args>]"
+
+# runtime vars
+SKIP_FULL=false
+AUTO_NEXT=false
 USING_GIT=false
+
+while getopts ash o; do
+	case $o in
+	a ) AUTO_NEXT=true;;
+	s ) SKIP_FULL=true;;
+	h )
+		cat <<-EOF
+		$USAGE
+
+		Simplify and clean up redundant or incorrect APT package state.
+
+		Arguments:
+		-a                  Auto mode; don't ask to drop to shell after each step.
+		-s                  Skip the selection dialog if all available entries are
+		                    already selected.
+		-h                  Show this help.
+		EOF
+		exit 1
+		;;
+	esac
+done
+shift `expr $OPTIND - 1`
 
 touch "$STATE" "$STATE.tmp" "$STATE.round" || abort 3 "cannot write to one of $STATE{,.tmp,.round}"
 cleanup() { rm -f "$STATE.tmp" "$STATE.round" 2>/dev/null; exit; }
@@ -166,13 +213,13 @@ user_run 'manual-top' "~i !($ESSENTIAL) $TOP_LEVEL !~M" 'top-level, non-automati
   || imperfect=true
 
 if $imperfect; then
-	echo "This round caused some changes and/or exposed some problems; running again to iron out newly-uncovered issues and/or to fix those problems."
+	echo "This round caused some changes and/or exposed some problems; running one final cleanup."
+	echo "It should not do anything unexpected; if it does, then abort and re-run this script."
+	aptitude --prompt install
+	echo "Running another round to iron out newly-uncovered issues and/or to fix those problems."
 fi
 
 done
-
-echo "Running one final cleanup. It should not do anything unexpected; if it does, then abort and re-run this script."
-aptitude --prompt install
 
 echo "apt-clean done."
 

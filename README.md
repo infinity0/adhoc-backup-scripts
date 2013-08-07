@@ -301,11 +301,6 @@ cluttered with redundant or "incorrect" (from a human point of view) state. This
 can interfere with its dependency resolution algorithms, which makes upgrading
 (both manual and automatic) much harder. See issues section for details.
 
-In the program's terminology, "top-level" refers to an installed package that is
-not predependant on / dependant on / recommended by another installed package,
-and "absolute top-level" refers to the subset that are additionally also not
-suggested by another installed package.
-
 ## Pre-use
 
 Depends: aptitude, dialog, git
@@ -373,6 +368,13 @@ to use to do the job correctly. This tool aims to automate much of the process,
 by giving natural-language descriptions of these issues and instructions on how
 to proceed, and also puts your previous answers under version control both to
 avoid repetition and data corruption due to APT/aptitude bugs.
+
+## Terminology
+
+In the explanation text, "top-level" refers to an installed package that is not
+predependant on / dependant on / recommended by another installed package, and
+"absolute top-level" refers to the subset of those that are additionally also
+not suggested by another installed package.
 
 ----
 
