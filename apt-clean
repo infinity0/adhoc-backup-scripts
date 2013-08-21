@@ -1,5 +1,7 @@
 #!/bin/bash
 # Simplify and clean up redundant or incorrect APT package state.
+# TODO: add commands to query the database, and display sorted based
+# on name/status/component/section etc.
 
 abort() { local x="$1"; shift; echo >&2 "$@"; exit "$x"; }
 

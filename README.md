@@ -4,7 +4,6 @@ Contents
 - [luksblk](#luksblk): manage simple LUKS block devices
 - [btsync](#btsync): synchronise a file over bittorrent
 - [apt-clean](#apt-clean): clean and simplify APT package state
-- [git-apt](#git-apt): track interesting parts of APT package state
 - [git-etc](#git-etc): track subparts of a filesystem
 
 rsconf+luksblk+btsync is my personal backup solution.
@@ -375,25 +374,6 @@ In the explanation text, "top-level" refers to an installed package that is not
 predependant on / dependant on / recommended by another installed package, and
 "absolute top-level" refers to the subset of those that are additionally also
 not suggested by another installed package.
-
-----
-
-# git-apt
-
-Keeps track of the "interesting" parts of APT package state.
-
-NOTE: apt-clean now includes the core functionality of this script. The
-remaining functionality (querying the "interesting" state) will probably be
-added to it too in the future. So you may consider this script deprecated.
-
-## Pre-use
-
-Depends: python, aptitude, git
-
-## Use
-
-$ apt-pkg i
-$ apt-pkg u
 
 ----
 
