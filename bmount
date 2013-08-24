@@ -1,0 +1,631 @@
+#!/usr/bin/python
+# TODO(infinity0): copy introduction from git-etc
+
+import argparse
+import logging
+import os
+import os.path
+import subprocess
+import sys
+import traceback
+import unittest
+
+MOUNTINFO = "/proc/self/mountinfo"
+if not os.path.exists(MOUNTINFO):
+	raise ImportError("need Linux >= 2.6.26") # see `man proc`
+
+DEFAULT_BINDFILE = ".bmrc"
+
+SEPLEN = len(os.path.sep)
+ROOT = os.getcwd()
+while ROOT != os.path.dirname(ROOT):
+	ROOT = os.path.dirname(ROOT)
+
+def p_cmp(a, b):
+	"""Comparator that forces path children to be sorted next to its parent."""
+	return cmp(a.split(os.path.sep), b.split(os.path.sep))
+
+def p_is_dir(p):
+	return p.endswith(os.path.sep)
+
+def p_to_dir(p):
+	return os.path.join(p, '')
+
+def p_to_rel(p):
+	return os.path.relpath(p, ROOT) if os.path.isabs(p) else p
+
+def p_to_abs(p):
+	return os.path.normpath(os.path.join(ROOT, p))
+
+def p_get_device(p):
+	assert not os.path.islink(p) # must never call this with a symlink
+	if not os.path.exists(p): return None, None
+	# run separately because df doesn't escape spaces in paths
+	# TODO(infinity0): it also turns \n into ?; find better alternative
+	output = subprocess.check_output(["df", "--output=source", p])
+	source = output.split('\n')
+	output = subprocess.check_output(["df", "--output=target", p])
+	target = output.split('\n')
+	return source[-2], target[-2]
+
+def f_type(p):
+	return ('_' if not os.path.lexists(p)
+	  else 'l' if os.path.islink(p)
+	  else 'd' if os.path.isdir(p) else 'f')
+
+def f_make(p, t):
+	assert not os.path.islink(p) # must never call this with a symlink
+	par = os.path.dirname(p)
+	if not os.path.exists(par):
+		os.makedirs(par)
+	if t == 'f':
+		logging.debug("create file %s", p)
+		open(p, 'a').close()
+	else:
+		logging.debug("create dir %s", p)
+		os.mkdir(p)
+
+def read_significant_line(fp):
+	while 1:
+		line = fp.readline()
+		if not line: return None
+		line = line.rstrip('\n')
+		if not line or line.startswith('#'): continue
+		return line
+
+def read_significant_lines(fp):
+	while 1:
+		line = read_significant_line(fp)
+		if not line: break
+		yield line
+
+def run_unstrict(cmd, *args, **kwargs):
+	try:
+		logging.info("running %r" % cmd)
+		subprocess.check_output(cmd, *args, **kwargs)
+	except subprocess.CalledProcessError, e:
+		logging.warn("command failed: %s" % e.output)
+
+
+class Points(object):
+	"""
+	:var list pts: List of path point entries. Each entry is an absolute
+	     path, where a final slash denotes a directory, and a lack of
+	     one denotes a file. Whenever you see a variable called "pp",
+	     you may assume interpret it like this.
+	"""
+	@staticmethod
+	def checkConsistent(a, b):
+		if p_is_dir(a):
+			if b.startswith(a):
+				raise ValueError("overlap: %s inside %s" % (b, a))
+		else:
+			if b.startswith(p_to_dir(a)):
+				raise ValueError("both a file and dir: %s, %s" % (a, b))
+
+	def __init__(self, unsafe_pts=[]):
+		pts = sorted(set(unsafe_pts), cmp=p_cmp)
+		for i in xrange(len(pts)-1):
+			Points.checkConsistent(pts[i], pts[i+1])
+		self.pts = pts
+
+	def __repr__(self):
+		return "Points(%r)" % self.pts
+
+	def insert(self, pp):
+		"""
+		:param pp: path point entry
+		"""
+		self.pts.append(pp)
+		self.pts.sort(cmp=p_cmp)
+		idx = self.pts.index(pp)
+		logging.debug("inserted %s @ %s in %s", pp, idx, self.pts)
+		try:
+			if idx > 0:
+				Points.checkConsistent(self.pts[idx-1], self.pts[idx])
+			if idx+1 < len(self.pts):
+				Points.checkConsistent(self.pts[idx], self.pts[idx+1])
+		except Exception:
+			self.pts.pop(idx)
+			raise
+		return self
+
+	def remove(self, pp):
+		"""
+		:param pp: path point entry
+		"""
+		self.pts.remove(pp)
+		return self
+
+	def get_anc(self, p):
+		"""
+		:param p: normalised path, no final sep
+		"""
+		parents = filter(lambda pp: p_is_dir(pp) and p.startswith(pp) and len(p) > len(pp), self.pts)
+		assert len(parents) <= 1 # due to disjoint restriction
+		return parents[0] if parents else None
+
+	def get_self(self, p):
+		"""
+		:param p: normalised path, no final sep
+		"""
+		return (p if p in self.pts else
+		  p_to_dir(p) if p_to_dir(p) in self.pts else
+		  None)
+
+	def get_desc(self, p):
+		"""
+		:param p: normalised path, no final sep
+		"""
+		return filter(lambda c: c.startswith(p_to_dir(p)), self.pts)
+
+
+class Bind(object):
+
+	def __init__(self, source, target):
+		self.source = p_to_dir(os.path.abspath(source))
+		self.target = p_to_dir(os.path.abspath(target))
+		if self.source == self.target:
+			raise ValueError("source and target cannot be same: %s" % self.source)
+		self.points = Points()
+		self._state = None
+		self._state_mtime = 0
+
+	def _readMounts(self):
+		state = []
+		#traceback.print_stack()
+		with open(MOUNTINFO, 'r') as fp:
+			for line in fp.readlines():
+				part1, part2 = line.split(" - ") # see `man proc` for spec
+				(_, _, _, mount_rel, fs_file, _) = part1.split(" ", 5)
+				fs_file = fs_file.decode("string_escape")
+				mount_rel = mount_rel.decode("string_escape")
+				(_, fs_spec, _) = part2.split(" ", 2)
+				fs_spec = fs_spec.decode("string_escape")
+				# TODO(infinity0): technically we should ignore mount points that are buried
+				# under other mount points. But really if your system is like that, why the
+				# fuck are you using this tool?
+
+				if fs_file.startswith(self.target) or p_to_dir(fs_file) == self.target:
+					pp = p_to_abs(os.path.relpath(fs_file, self.target))
+					pp = p_to_dir(pp) if os.path.isdir(fs_file) else pp
+					if pp in state:
+						logging.warn("multiple mounts on: %s", pp)
+					if pp not in self.points.pts:
+						src, dst = self.getEndpoints(pp)
+						src_dev, base_pt = p_get_device(src)
+						# Below is (I believe) the best possible heuristic given that Linux does not
+						# store explicitly whether a mountpoint was done using --bind. It is
+						# possible that it is even fully-correct but I don't think it's worth the
+						# effort for me to think it through in that much detail. In particular, I
+						# have not considered the cases where src/dst traverses symlinks.
+						src_mount_rel = os.path.relpath(src, base_pt) if base_pt else None
+						if fs_spec != src_dev or mount_rel != p_to_abs(src_mount_rel):
+							logging.debug("ignore (seemingly) non-bmount mount point: %s" % fs_file)
+							continue
+						logging.warn("extraneous mount on: %s", pp)
+					state.append(pp)
+		return state
+
+	@property
+	def state(self):
+		# TODO(infinity0): perhaps we could call this not every time
+		# or maybe it doesn't matter, perhaps kernel caches it
+		mtime = os.stat(MOUNTINFO).st_mtime
+		# sometimes mtime doesn't update even after a change...
+		if self._state is None or mtime > self._state_mtime:
+			try:
+				self._state = Points(self._readMounts())
+				self._state_mtime = mtime
+			except Exception, e:
+				traceback.print_exc()
+				logging.warn("unable to parse current bind state: %s", e.message)
+				logging.warn("I will continue, but avoid touching the system")
+				logging.warn("You may also run umountForce to try to fix the issue")
+				self._state = Points(["/invalid_state_detected"])
+				# i.e. assert INVALID but avoid infinite recursion
+				assert set(self._state.pts) - set(self.points.pts)
+		return self._state
+
+	@property
+	def status(self):
+		if self.points.pts == self.state.pts:
+			return 'FULL'
+		elif not self.state.pts:
+			return 'NONE'
+		elif set(self.state.pts) - set(self.points.pts):
+			return 'INVALID'
+		else:
+			return 'PARTIAL'
+
+	def report(self, msg='report', debug=False):
+		l = logging.debug if debug else logging.info
+		l("%s: %s: %s vs %s", msg, self.status, self.points, self.state)
+
+	def getEndpoints(self, p):
+		src = os.path.normpath(os.path.join(self.source, p_to_rel(p)))
+		dst = os.path.normpath(os.path.join(self.target, p_to_rel(p)))
+		return src, dst
+
+	def _mountTry(self, pp):
+		src, dst = self.getEndpoints(pp)
+		run_unstrict(["sudo", "mount", "-B", src, dst])
+		self._state = None # invalidate cache
+
+	def _umountTry(self, pp):
+		src, dst = self.getEndpoints(pp)
+		run_unstrict(["sudo", "umount", dst])
+		self._state = None # invalidate cache
+
+	def mountAll(self):
+		status = self.status
+		if status == 'FULL':
+			logging.info("mountAll nothing to do")
+			return
+		elif status == 'INVALID':
+			raise ValueError("cannot run in state INVALID")
+
+		for pp in sorted(set(self.points.pts) - set(self.state.pts), cmp=p_cmp):
+			self._ensureEndpoints(pp)
+			self._mountTry(pp)
+
+		if self.status == 'FULL':
+			self.report("mountAll complete")
+		else:
+			self.report("mountAll incomplete")
+
+	def umountAll(self):
+		status = self.status
+		if status == 'NONE':
+			logging.info("umountAll nothing to do")
+			return
+		elif status == 'INVALID':
+			raise ValueError("cannot run in state INVALID")
+
+		for pp in self.state.pts:
+			self._umountTry(pp)
+
+		if self.status == 'NONE':
+			self.report("umountAll complete")
+		else:
+			self.report("umountAll incomplete")
+
+	def umountForce(self):
+		if self.status != 'INVALID':
+			raise ValueError("can only run in state INVALID")
+
+		mounts = self._readMounts()
+		oldlen = len(mounts)
+		while 1:
+			for pp in mounts.__reversed__():
+				self._umountTry(pp)
+			mounts = self._readMounts()
+			curlen = len(mounts)
+			if curlen == 0 or curlen >= oldlen: # finished, or making no progress
+				break
+			oldlen = curlen
+		if curlen == 0:
+			self.report("umountForce complete")
+			assert self.status == 'NONE'
+		else:
+			self.report("umountForce incomplete; requires manual intervention")
+
+	def _insertBind(self, pp, dryrun=False):
+		"""
+		:param p: normalised path, no final sep
+		"""
+		logging.debug("insert %s", pp)
+		status = self.status if not dryrun else None # don't call if not needed
+		self.points.insert(pp)
+		if status == 'FULL':
+			logging.info("FULL, will try to insert the bind mount")
+			self._mountTry(pp)
+		return pp
+
+	def _removeBind(self, pp, dryrun=False):
+		"""
+		:param p: normalised path, no final sep
+		"""
+		logging.debug("remove %s", pp)
+		status = self.status if not dryrun else None # don't call if not needed
+		self.points.remove(pp)
+		if status == 'FULL':
+			logging.info("FULL, will try to remove the bind mount")
+			self._umountTry(pp)
+		return pp
+
+	def _ensureEndpoints(self, p, dryrun=False):
+		"""
+		Ensure that the endpoints exist for bind-mounting.
+
+		If either endpoint is a file/dir, the other must be a file/dir.
+		If one does not exist, it is created of the same type as the
+		other. If neither exist, both are created as directories.
+		"""
+		src, dst = self.getEndpoints(p)
+
+		src_t = f_type(src)
+		dst_t = f_type(dst)
+		p = os.path.join(ROOT, p) # force absolute
+		def pdIfNotSubsume():
+			if self.source.startswith(p_to_dir(dst)):
+				raise ValueError("target point would subsume source tree: %s" % dst)
+			return p_to_dir(p)
+		# TODO(infinity0): think about what if src/dst traverses symlinks.
+		# This may interfere with bmount mount point detection, in which case
+		# we would have to disallow it.
+
+		if src_t == dst_t == '_':
+			if not dryrun: f_make(src, 'd')
+			if not dryrun: f_make(dst, 'd')
+			return pdIfNotSubsume()
+		elif src_t == 'l':
+			raise ValueError("symlinks not supported due to mount(8) limitation: %s" % src)
+		elif dst_t == 'l':
+			raise ValueError("symlinks not supported due to mount(8) limitation: %s" % dst)
+		elif src_t == '_' and dst_t != '_':
+			if not dryrun: f_make(src, dst_t)
+			return pdIfNotSubsume() if dst_t == 'd' else p
+		elif src_t != '_' and dst_t == '_':
+			if not dryrun: f_make(dst, src_t)
+			return pdIfNotSubsume() if src_t == 'd' else p
+		elif src_t == dst_t:
+			return pdIfNotSubsume() if src_t == 'd' else p
+		else:
+			raise ValueError("conflicting types: %s, %s" % (src, dst))
+
+	def insert(self, p, dryrun=False, noreport=False):
+		"""
+		:param p: path to insert
+		:return ins, rem: the bind points that were actually inserted and/or removed
+		"""
+		p = p_to_abs(p)
+		logging.debug("resolved to %s", p)
+
+		panc = self.points.get_anc(p)
+		if panc:
+			logging.info("ignore insert: ancestor already inserted: %s", panc)
+			return [], []
+
+		pp = self.points.get_self(p)
+		if pp:
+			logging.info("ignore insert: self already inserted: %s", pp)
+			return [], []
+
+		desc = self.points.get_desc(p)
+		# umount children first
+
+		rem = [self._removeBind(c, dryrun) for c in desc]
+		ins = [self._insertBind(self._ensureEndpoints(p, dryrun), dryrun)]
+		if not noreport: self.report("insert finished", dryrun)
+		return ins, rem
+
+	def remove(self, p, dryrun=False, noreport=False):
+		"""
+		:param p: path to remove
+		:return ins, rem: the bind points that were actually inserted and/or removed
+		"""
+		p = p_to_abs(p)
+		logging.debug("resolved to %s", p)
+
+		panc = self.points.get_anc(p)
+		if panc:
+			raise ValueError("cannot remove: must remove ancestor instead: %s" % panc)
+
+		pp = self.points.get_self(p)
+		if pp:
+			return [], [self._removeBind(pp, dryrun)]
+
+		desc = self.points.get_desc(p)
+		if not desc:
+			logging.info("ignore remove: self already removed and no children: %s", pp)
+
+		rem = [self._removeBind(c, dryrun) for c in desc]
+		ins = []
+		if not noreport: self.report("remove finished", dryrun)
+		return ins, rem
+
+
+class BindFile(object):
+	# TODO(infinity0): __enter__ and __exit__
+
+	def __init__(self, fn=DEFAULT_BINDFILE):
+		self.fn = fn
+		self.args = None
+		self.bind = None
+
+	def parseArgs(self, *args):
+		if not args:
+			raise ValueError("arg syntax: (src, dst), or ('import', src='/') or ('export', dst='/')")
+		elif args[0] == "import":
+			src, dst = args[1] if len(args) > 1 and args[1] else ROOT, os.curdir
+		elif args[0] == "export":
+			src, dst = os.curdir, args[1] if len(args) > 1 and args[1] else ROOT
+		elif args[0] and args[1]:
+			src, dst = args[0], args[1]
+		else:
+			raise ValueError("arg syntax: (src, dst), or ('import', src='/') or ('export', dst='/')")
+
+		return src, dst
+
+	def init(self, *args):
+		self.parseArgs(*args) # ensure valid
+		self.args = args
+		with open(self.fn, 'w') as fp:
+			print >>fp, "\t".join(self.args)
+		logging.debug("file wrote: %s", self.fn)
+		self.load()
+
+	def load(self):
+		# TODO(infinity0): decode("string_escape") for annoying people that use \t,\n
+		with open(self.fn, 'r') as fp:
+			args = read_significant_line(fp).rstrip("\n").split("\t")
+			points = list(read_significant_lines(fp))
+
+		src, dst = self.parseArgs(*args)
+
+		# expand ~ and ~username
+		src = os.path.expanduser(src)
+		dst = os.path.expanduser(dst)
+
+		# paths relative to file rather than cwd
+		if not os.path.isabs(src):
+			src = os.path.join(os.path.dirname(self.fn), src)
+		if not os.path.isabs(dst):
+			dst = os.path.join(os.path.dirname(self.fn), dst)
+
+		bind = Bind(src, dst)
+		logging.debug("file read: %s: %s to %s", self.fn, bind.source, bind.target)
+		try:
+			for line in points:
+				bind.insert(line.rstrip('\n'), dryrun=True, noreport=True)
+		except:
+			logging.warn("error loading file: %s", self.fn)
+			raise
+
+		self.args = args
+		self.bind = bind
+		_ = bind.state
+
+	def save(self):
+		if self.bind is None:
+			raise ValueError("not loaded")
+
+		# TODO(infinity0): encode("string_escape") for annoying people that use \t,\n
+		with open(self.fn, 'w') as fp:
+			print >>fp, "\t".join(self.args)
+			for pp in self.bind.points.pts:
+				print >>fp, pp
+		logging.debug("file wrote: %s", self.fn)
+
+	def insert(self, *pps):
+		for pp in pps:
+			self.bind.insert(pp)
+		self.save()
+
+	def remove(self, *pps):
+		for pp in pps:
+			self.bind.remove(pp)
+		self.save()
+
+
+def main(*args):
+	parser = argparse.ArgumentParser()
+	parser.add_argument("-f", "--file", help="bind file to load and save, default %(default)s. "
+	  "if given a directory, taken to be %(default)s contained within that directory.",
+	  dest='bindfile', default=DEFAULT_BINDFILE)
+	parser.add_argument("-v", "--verbose", help="increase output verbosity",
+	  action="count")
+	subps = parser.add_subparsers(help="sub-command to run",
+	  metavar="SUBCMD", dest='subcmd')
+
+	subp = subps.add_parser("init", help="init or reset a bind file")
+	subp.add_argument("-y", "--yes", help="force-reset bind fb bile even if it already exists",
+	  action='store_true', default=False)
+	subp.add_argument("args", help="""<source> <target>, or export <target> or import <source>. """
+	  "in the latter cases, source/target is implicitly %s, and the second argument "
+	  "may be omitted to implicitly be %s." % (os.curdir, ROOT),
+	  nargs='+')
+
+	subp = subps.add_parser("insert", help="insert a point")
+	subp.add_argument("points", nargs='+', help="point to insert")
+	subp = subps.add_parser("remove", help="remove a point")
+	subp.add_argument("points", nargs='+', help="point to remove")
+
+	subp = subps.add_parser("status", help="get the current status",
+	  description="output meanings: NONE: no points are active; FULL: all points are active; "
+	  "PARTIAL: some points are active; INVALID: extraneous points are active.")
+	subp = subps.add_parser("mountAll", help="mount all points")
+	subp = subps.add_parser("umountAll", help="umount all points")
+	subp = subps.add_parser("umountForce", help="in INVALID state, umount all existing points")
+
+	opts = parser.parse_args(args)
+	#print opts
+	if opts.verbose >= 2:
+		logging.getLogger().setLevel(logging.DEBUG)
+	elif opts.verbose >= 1:
+		logging.getLogger().setLevel(logging.INFO)
+
+	fn = opts.bindfile
+	b = BindFile(os.path.join(fn, DEFAULT_BINDFILE) if os.path.isdir(fn) else fn)
+
+	if opts.subcmd == "init":
+		if os.path.exists(b.fn) and not opts.yes:
+			raise ValueError("path already exists: %s" % b.fn)
+		else:
+			b.init(*opts.args)
+	elif not os.path.exists(fn):
+		raise ValueError("bindfile does not exist; run 'init' first: %s" % fn)
+
+	if opts.subcmd in ["insert", "remove"]:
+		b.load()
+		getattr(b, opts.subcmd)(*opts.points)
+
+	if opts.subcmd == "status":
+		b.load()
+		if opts.verbose >= 1:
+			print "file: %s" % b.fn
+			print "args: %s" % ','.join(b.args)
+			print "status: %s" % b.bind.status
+			print "wanted: %r" % b.bind.points.pts
+			print "active: %r" % b.bind.state.pts
+		else:
+			print b.bind.status
+
+	if opts.subcmd in ["mountAll", "umountAll", "umountForce"]:
+		b.load()
+		getattr(b.bind, opts.subcmd)()
+
+	return 0
+
+
+class Test(unittest.TestCase):
+
+	def test_p_to_rel(self):
+		self.assertEquals(p_to_rel(ROOT), os.curdir)
+		self.assertEquals(p_to_rel(os.curdir), os.curdir)
+		self.assertTrue(os.path.join('a', p_to_rel(os.getcwd())).startswith('a'))
+
+	def test_p_cmp(self):
+		self.assertEquals(sorted(['x', 'xa', 'x+', 'x/']), ['x', 'x+', 'x/', 'xa'])
+		self.assertEquals(sorted(['x', 'xa', 'x+', 'x/'], cmp=p_cmp), ['x', 'x/', 'x+', 'xa'])
+
+	def test_Points_dup(self):
+		self.assertRaises(ValueError, Points, ['/a', '/a/'])
+
+	def test_Points_sub(self):
+		self.assertRaises(ValueError, Points, ['a/', 'a/b'])
+		self.assertRaises(ValueError, Points, ['a', 'a/b'])
+		self.assertRaises(ValueError, Points, ['a', 'a+b', 'a/b'])
+
+	def test_Points_get_anc(self):
+		p = Points(['/a/', '/b/c'])
+		self.assertEquals(p.get_anc('/a'), None)
+		self.assertEquals(p.get_anc('/'), None)
+		self.assertEquals(p.get_anc('/a/c'), '/a/')
+
+	def test_Points_get_anc_root(self):
+		p = Points(['/'])
+		self.assertEquals(p.get_anc('/a'), '/')
+		self.assertEquals(p.get_anc('/'), None)
+
+	def test_Points_get_self(self):
+		p = Points(['/ab/'])
+		self.assertEquals(p.get_self('/ab'), '/ab/')
+		p = Points(['/ab'])
+		self.assertEquals(p.get_self('/ab'), '/ab')
+
+	def test_Points_get_self_root(self):
+		p = Points(['/'])
+		self.assertEquals(p.get_self('/a'), None)
+		self.assertEquals(p.get_self('/'), '/')
+
+	def test_Points_get_desc(self):
+		p = Points(['/a/b', '/a/c'])
+		self.assertEquals(p.get_desc('/a'), ['/a/b', '/a/c'])
+		self.assertEquals(p.get_desc('/'), ['/a/b', '/a/c'])
+
+
+if __name__ == '__main__':
+	sys.exit(main(*sys.argv[1:]))
+
