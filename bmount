@@ -65,6 +65,13 @@ def f_make(p, t):
 		logging.debug("create dir %s", p)
 		os.mkdir(p)
 
+def d_get_bindfile(dd, f=DEFAULT_BINDFILE):
+	d = os.path.abspath(dd)
+	while not os.path.isfile(os.path.join(d, f)):
+		if d == ROOT: return os.path.normpath(os.path.join(dd, f))
+		d = os.path.dirname(d)
+	return os.path.join(d, f)
+
 def read_significant_line(fp):
 	while 1:
 		line = fp.readline()
@@ -511,9 +518,13 @@ class BindFile(object):
 
 def main(*args):
 	parser = argparse.ArgumentParser()
-	parser.add_argument("-f", "--file", help="bind file to load and save, default %(default)s. "
-	  "if given a directory, taken to be %(default)s contained within that directory.",
+	parser.add_argument("-f", "--file", help="bind file to load and save, default \"%(default)s\".",
 	  dest='bindfile', default=DEFAULT_BINDFILE)
+	group = parser.add_mutually_exclusive_group()
+	group.add_argument("-u", "--up", help="search this and ancestors for the bindfile.",
+	  metavar='DIR', dest='binddir_up')
+	group.add_argument("-d", "--down", help="search this and descendants for the bindfile.",
+	  metavar='DIR', dest='binddir_down')
 	parser.add_argument("-v", "--verbose", help="increase output verbosity",
 	  action="count")
 	subps = parser.add_subparsers(help="sub-command to run",
@@ -546,8 +557,22 @@ def main(*args):
 	elif opts.verbose >= 1:
 		logging.getLogger().setLevel(logging.INFO)
 
-	fn = opts.bindfile
-	b = BindFile(os.path.join(fn, DEFAULT_BINDFILE) if os.path.isdir(fn) else fn)
+	fn = os.path.normpath(opts.bindfile)
+	if os.path.dirname(fn):
+		if opts.binddir_down or opts.binddir_up:
+			logging.debug("ignore -u/-d since -f is a path: %s" % fn)
+	elif opts.binddir_up:
+		fn = d_get_bindfile(opts.binddir_up, fn)
+	elif opts.binddir_down:
+		cands = [dp for (dp, dns, fns) in os.walk(opts.binddir_down) if fn in fns]
+		if not cands:
+			raise ValueError("no %s found in %s" % (fn, opts.binddir_down))
+		elif len(cands) == 1:
+			fn = os.path.normpath(os.path.join(cands[0], fn))
+		else:
+			raise ValueError("multiple %s found in %s: %s" % (fn, opts.binddir_down, cands))
+
+	b = BindFile(fn)
 
 	if opts.subcmd == "init":
 		if os.path.exists(b.fn) and not opts.yes:
