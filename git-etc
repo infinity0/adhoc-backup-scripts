@@ -1,25 +1,7 @@
 #!/bin/sh
 # Transparently mirror files on a system into a git repo.
 #
-# The script provides an alternate view of (a user-specified subset of) a system
-# inside a git repo - i.e. writes to either location show up immediately at the
-# other location. This is done via "bind mounts" - see mount(8) for details.
-#
-# NOTE: this tool can mirror files from part of the filesystem, not just /etc,
-# but "git-fs" was already taken.
-#
-# etckeeper wasn't enough for my purposes:
-# - tracked too many files by default, with no easy way to ignore most of them
-#   - e.g. I really don't care about /etc/rc*.d
-#   - I also don't care about config changes due to package upgrades
-# - no way to track files outside of /etc
-# - no way to put the repo somewhere other than /etc/.git
-# - forced to run as superuser, with everything under one repo
-#
-# more advanced use case that etckeeper also can't handle:
-# - public config in a repo owned by a normal user
-#   - you can share this to others for backup/review
-# - private config (e.g. passwords) in a repo owned by root
+# TODO: get rid of bind-mount stuff and use bmount instead.
 #
 # Usage example:
 #

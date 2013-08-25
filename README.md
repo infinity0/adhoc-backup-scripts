@@ -101,25 +101,77 @@ not suggested by another installed package.
 
 # bmount
 
-(intro)
+Mirror subtrees between different parts of the filesystem using bind-mounts.
+
+Example use-cases:
+
+- you want to put specific parts of a server config under version control, but
+  don't want to blanket-track everything under /etc. (see git-etc below for
+  more functionality in this area.)
+- you want to store secrets in some secure medium, and temporarily link it to a
+  location where it can be used (e.g. ~) but only when you need it.
 
 ## Pre-use
 
-Depends: python (>= 2.7)
+Depends: python (>= 2.7), linux (>= 2.6.26)
 
 ## Use
+
+TODO
+
+## Related
+
+Two similar tools exist already, but weren't suited to my purposes.
+
+[etckeeper][]:
+
+- cannot handle arbitrary subtrees; tracks too many files by default, with no
+  easy way to ignore most of them
+	- e.g. I really don't care about /etc/rc*.d
+	- I also don't care about config changes due to package upgrades
+	- trivial differences (e.g. different package versions) make it hard to
+	  compare systems that are otherwise identical in the *important* areas.
+- no way to track files outside of /etc
+- git-etc provides some additional advantages over the git-specific parts of
+  etckeeper; see below. bmount+git-etc is my take on etckeeper.
+
+[live-persist][]:
+
+- like bmount, it can handle arbitrary subtrees
+- is even more flexible in the types of mirror it can handle: bind-mounts,
+  symlink trees, and different types of unionfs.
+- however, it can only "activate" the mirror, not deactivate it. it also does
+  not support live editing of the config (e.g. new subtrees to mirror) that
+  gets applied automatically.
+
+[etckeeper]: http://joeyh.name/code/etckeeper/
+[live-persist]: http://live-systems.org/manpages/stable/en/html/persistence.conf.5.html
 
 ----
 
 # git-etc
 
-(intro)
+TODO: this section is not yet complete, since git-etc is in the middle of being
+refactored to take advantage of bmount's more robust handling of bind-mounts.
+
+More advanced use case compared to etckeeper:
+
+- can put the repo somewhere other than /etc/.git
+- don't need to run as superuser, can split repo by security levels, e.g.:
+	- public config in a repo owned by a normal user. you can share this with
+	  others for backup/review.
+	- private config (e.g. passwords) in a repo owned by root
+
+TODO: add the functionality from rsconf that automatically detects changed or
+new configs (relative to dpkg's database) in /etc
 
 ## Pre-use
 
 Depends: git, liblchown-perl
 
 ## Use
+
+TODO
 
 ----
 
