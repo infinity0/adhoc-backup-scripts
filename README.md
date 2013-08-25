@@ -1,14 +1,125 @@
 Contents
 
+- [apt-clean](#apt-clean): clean and simplify APT package state
+- [bmount](#bmount): mirror subtrees of a filesystem
+- [git-etc](#git-etc): track system files and metadata in git
 - [rsconf](#rsconf): simple backup framework for rsnapshot
 - [luksblk](#luksblk): manage simple LUKS block devices
 - [btsync](#btsync): synchronise a file over bittorrent
-- [apt-clean](#apt-clean): clean and simplify APT package state
-- [git-etc](#git-etc): track subparts of a filesystem
 
 rsconf+luksblk+btsync is my personal backup solution.
 
 I'll describe why I wrote my own rather than use existing ones as well :)
+
+----
+
+# apt-clean
+
+Simplify and clean up redundant or incorrect APT package state.
+
+Over the lifetime of a Debian installation, the APT package state can become
+cluttered with redundant or "incorrect" (from a human point of view) state. This
+can interfere with its dependency resolution algorithms, which makes upgrading
+(both manual and automatic) much harder. See issues section for details.
+
+## Pre-use
+
+Depends: aptitude, dialog, git
+
+## Use
+
+Run as root and follow the instructions, which should be self-explanatory. It
+will save your answers into `$PWD/apt-clean.txt`, so make sure that is writable.
+This is a subset of your APT package state that is "interesting" from a human
+perspective. (This is somewhat subjective and based on about 5 years of me
+adminstrating various Debian systems; those familiar with the APT object model
+are welcome to read the source and file pull requests for improvements.)
+
+The cleanup proceeds in rounds; each round consists of a series of steps, and
+the program will execute successive identical rounds until no changes are
+detected. Each step represents a type of installation profile (for lack of a
+better word), e.g. "automatically installed top-level packages". You are asked
+to identify the subset that intentionally belongs to that profile, as opposed
+to being an accidental by-product of the issues below. Pay attention to the
+instructions on how to achieve this; it encourages you to eliminate redundancy.
+
+The first time you run this program, your APT state is likely to be very untidy
+and it will require the most effort to clean up. However, once you figure out
+the initial non-redunant clean state file, subsequent runs of this program will
+require much less effort to detect new redundancies or untidiness.
+
+Note: if you terminate the program with ctrl-C, your terminal will probably be
+a bit screwed. Simply run `reset` (part of ncurses, which is a dependency of
+dialog) and it will go back to normal. Even if you can't see those characters,
+typing `<ctrl-C> reset <enter>` should hopefully work.
+
+## Issues
+
+Issues with APT/aptitude:
+
+- Imperfect manual maintenance
+	- If you are manually trying to resolve dependencies, it's very common to run
+	  "aptitude install A B C", where A B C are the dependencies of some target
+	  package T. However, this is actually incorrect, because these packages will be
+	  marked *manual*, meaning they will remain on the system even if no longer
+	  needed. This by itself may not seem like a big deal, but it interferes with
+	  future dependency resolution, because the algorithm will try to satisfy the
+	  constraints "do not remove A or B or C", which may be impossible and yet
+	  unnecessary, hence failing the resolution unnecessarily.
+- Subtle aptitude bugs or design flaws
+	- The APT object model is very complex, e.g.
+		- OR-dependencies and virtual packages means that "reverse depends" is not a
+		  well-defined concept (see e.g. bug #594237). Another side effect is that
+		  "aptitude remove X; aptitude install X;" in certain cases may not be a no-op,
+		  which is misleading and non-intuitive.
+		- the ability for users to change at any time whether "automatically installed"
+		  should include Depends:, Recommends: or Suggests: relationships means you
+		  cannot be sure what "automatic" really means.
+	- Because of this, it is not implausible that the dependency resolver algorithm
+	  makes different assumptions in different cases, which can result in undesired
+	  or (from a higher point of view) "inconsistent" package state.
+	- There have been many bugs in APT/aptitude relating to "auto" flags being
+	  cleared en-masse or otherwise corrupted. There are too many to list; at the time
+	  of writing, a debian bugs search on aptitude for "auto" gave ~50 results, of
+	  with ~20 was relevant to this.
+
+Dealing with these issues manually requires a deep understanding of the APT
+object model, and even then it's very tedious to remember which search patterns
+to use to do the job correctly. This tool aims to automate much of the process,
+by giving natural-language descriptions of these issues and instructions on how
+to proceed, and also puts your previous answers under version control both to
+avoid repetition and data corruption due to APT/aptitude bugs.
+
+## Terminology
+
+In the explanation text, "top-level" refers to an installed package that is not
+predependant on / dependant on / recommended by another installed package, and
+"absolute top-level" refers to the subset of those that are additionally also
+not suggested by another installed package.
+
+----
+
+# bmount
+
+(intro)
+
+## Pre-use
+
+Depends: python (>= 2.7)
+
+## Use
+
+----
+
+# git-etc
+
+(intro)
+
+## Pre-use
+
+Depends: git, liblchown-perl
+
+## Use
 
 ----
 
@@ -288,101 +399,3 @@ the reverse proxy.
 
 You might also need to tweak the TRACKER_HACK variable in bttrack.vars. Due to
 this reverse proxy setup, `--fallback_ip` is likely necessary in most cases.
-
-----
-
-# apt-clean
-
-Simplify and clean up redundant or incorrect APT package state.
-
-Over the lifetime of a Debian installation, the APT package state can become
-cluttered with redundant or "incorrect" (from a human point of view) state. This
-can interfere with its dependency resolution algorithms, which makes upgrading
-(both manual and automatic) much harder. See issues section for details.
-
-## Pre-use
-
-Depends: aptitude, dialog, git
-
-## Use
-
-Run as root and follow the instructions, which should be self-explanatory. It
-will save your answers into `$PWD/apt-clean.txt`, so make sure that is writable.
-This is a subset of your APT package state that is "interesting" from a human
-perspective. (This is somewhat subjective and based on about 5 years of me
-adminstrating various Debian systems; those familiar with the APT object model
-are welcome to read the source and file pull requests for improvements.)
-
-The cleanup proceeds in rounds; each round consists of a series of steps, and
-the program will execute successive identical rounds until no changes are
-detected. Each step represents a type of installation profile (for lack of a
-better word), e.g. "automatically installed top-level packages". You are asked
-to identify the subset that intentionally belongs to that profile, as opposed
-to being an accidental by-product of the issues below. Pay attention to the
-instructions on how to achieve this; it encourages you to eliminate redundancy.
-
-The first time you run this program, your APT state is likely to be very untidy
-and it will require the most effort to clean up. However, once you figure out
-the initial non-redunant clean state file, subsequent runs of this program will
-require much less effort to detect new redundancies or untidiness.
-
-Note: if you terminate the program with ctrl-C, your terminal will probably be
-a bit screwed. Simply run `reset` (part of ncurses, which is a dependency of
-dialog) and it will go back to normal. Even if you can't see those characters,
-typing `<ctrl-C> reset <enter>` should hopefully work.
-
-## Issues
-
-Issues with APT/aptitude:
-
-- Imperfect manual maintenance
-	- If you are manually trying to resolve dependencies, it's very common to run
-	  "aptitude install A B C", where A B C are the dependencies of some target
-	  package T. However, this is actually incorrect, because these packages will be
-	  marked *manual*, meaning they will remain on the system even if no longer
-	  needed. This by itself may not seem like a big deal, but it interferes with
-	  future dependency resolution, because the algorithm will try to satisfy the
-	  constraints "do not remove A or B or C", which may be impossible and yet
-	  unnecessary, hence failing the resolution unnecessarily.
-- Subtle aptitude bugs or design flaws
-	- The APT object model is very complex, e.g.
-		- OR-dependencies and virtual packages means that "reverse depends" is not a
-		  well-defined concept (see e.g. bug #594237). Another side effect is that
-		  "aptitude remove X; aptitude install X;" in certain cases may not be a no-op,
-		  which is misleading and non-intuitive.
-		- the ability for users to change at any time whether "automatically installed"
-		  should include Depends:, Recommends: or Suggests: relationships means you
-		  cannot be sure what "automatic" really means.
-	- Because of this, it is not implausible that the dependency resolver algorithm
-	  makes different assumptions in different cases, which can result in undesired
-	  or (from a higher point of view) "inconsistent" package state.
-	- There have been many bugs in APT/aptitude relating to "auto" flags being
-	  cleared en-masse or otherwise corrupted. There are too many to list; at the time
-	  of writing, a debian bugs search on aptitude for "auto" gave ~50 results, of
-	  with ~20 was relevant to this.
-
-Dealing with these issues manually requires a deep understanding of the APT
-object model, and even then it's very tedious to remember which search patterns
-to use to do the job correctly. This tool aims to automate much of the process,
-by giving natural-language descriptions of these issues and instructions on how
-to proceed, and also puts your previous answers under version control both to
-avoid repetition and data corruption due to APT/aptitude bugs.
-
-## Terminology
-
-In the explanation text, "top-level" refers to an installed package that is not
-predependant on / dependant on / recommended by another installed package, and
-"absolute top-level" refers to the subset of those that are additionally also
-not suggested by another installed package.
-
-----
-
-# git-etc
-
-(intro)
-
-## Pre-use
-
-Depends: git, liblchown-perl
-
-## Use
