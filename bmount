@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 """
 Mirror subtrees between different parts of the filesystem using bind-mounts.
 """
@@ -534,28 +534,36 @@ def main(*args):
 	parser.add_argument("-v", "--verbose", help="increase output verbosity",
 	  action="count", default=0)
 	subps = parser.add_subparsers(help="sub-command to run",
-	  metavar="SUBCMD", dest='subcmd')
+	  metavar="SUBCMD")
 
-	subp = subps.add_parser("init", help="init or reset a bind file")
+	subp = subps.add_parser("init", help="init or reset a bind file", aliases=["n"])
 	subp.add_argument("-y", "--yes", help="force-reset bind fb bile even if it already exists",
 	  action='store_true', default=False)
 	subp.add_argument("args", help="""<source> <target>, or export <target> or import <source>. """
 	  "in the latter cases, source/target is implicitly %s, and the second argument "
 	  "may be omitted to implicitly be %s." % (os.curdir, ROOT),
 	  nargs='+')
+	subp.set_defaults(subcmd="init")
 
-	subp = subps.add_parser("insert", help="insert a point")
+	subp = subps.add_parser("insert", help="insert a point", aliases=["i"])
 	subp.add_argument("points", nargs='+', help="point to insert")
-	subp = subps.add_parser("remove", help="remove a point")
+	subp.set_defaults(subcmd="insert")
+	subp = subps.add_parser("remove", help="remove a point", aliases=["r"])
 	subp.add_argument("points", nargs='+', help="point to remove")
+	subp.set_defaults(subcmd="remove")
 
-	subp = subps.add_parser("status", help="get the current status",
+	subp = subps.add_parser("status", help="get the current status", aliases=["s"],
 	  description="output meanings: NONE: no points are active; FULL: all points are active; "
 	  "PARTIAL: some points are active; INVALID: extraneous points are active.")
-	subp = subps.add_parser("list", help="list all points")
-	subp = subps.add_parser("mountAll", help="mount all points")
-	subp = subps.add_parser("umountAll", help="umount all points")
+	subp.set_defaults(subcmd="status")
+	subp = subps.add_parser("list", help="list all points", aliases=["l"])
+	subp.set_defaults(subcmd="list")
+	subp = subps.add_parser("mountAll", help="mount all points", aliases=["m"])
+	subp.set_defaults(subcmd="mountAll")
+	subp = subps.add_parser("umountAll", help="umount all points", aliases=["u"])
+	subp.set_defaults(subcmd="umountAll")
 	subp = subps.add_parser("umountForce", help="in INVALID state, umount all existing points")
+	subp.set_defaults(subcmd="umountForce")
 
 	opts = parser.parse_args(args)
 	#print opts
