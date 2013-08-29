@@ -511,15 +511,17 @@ class BindFile(object):
 				print(pp, file=fp)
 		logging.debug("file wrote: %s", self.fn)
 
-	def insert(self, *pps):
+	def insert(self, *pps, dryrun=False):
 		for pp in pps:
-			self.bind.insert(pp)
-		self.save()
+			self.bind.insert(pp, dryrun=dryrun)
+		if not dryrun:
+			self.save()
 
-	def remove(self, *pps):
+	def remove(self, *pps, dryrun=False):
 		for pp in pps:
-			self.bind.remove(pp)
-		self.save()
+			self.bind.remove(pp, dryrun=dryrun)
+		if not dryrun:
+			self.save()
 
 
 def main(*args):
@@ -546,9 +548,13 @@ def main(*args):
 	subp.set_defaults(subcmd="init")
 
 	subp = subps.add_parser("insert", help="insert a point", aliases=["i"])
+	subp.add_argument("-n", "--dry-run", help="print what would be done, don't actually do",
+	  action="store_true", default=False)
 	subp.add_argument("points", nargs='+', help="point to insert")
 	subp.set_defaults(subcmd="insert")
 	subp = subps.add_parser("remove", help="remove a point", aliases=["r"])
+	subp.add_argument("-n", "--dry-run", help="print what would be done, don't actually do",
+	  action="store_true", default=False)
 	subp.add_argument("points", nargs='+', help="point to remove")
 	subp.set_defaults(subcmd="remove")
 
@@ -566,7 +572,8 @@ def main(*args):
 	subp.set_defaults(subcmd="umountForce")
 
 	opts = parser.parse_args(args)
-	#print opts
+	if hasattr(opts, "dry_run") and opts.dry_run and opts.verbose < 2:
+		opts.verbose = 2
 	if opts.verbose >= 2:
 		logging.getLogger().setLevel(logging.DEBUG)
 	elif opts.verbose >= 1:
@@ -605,7 +612,7 @@ def main(*args):
 
 	if opts.subcmd in ["insert", "remove"]:
 		b.load()
-		getattr(b, opts.subcmd)(*opts.points)
+		getattr(b, opts.subcmd)(*opts.points, dryrun=opts.dry_run)
 
 	if opts.subcmd == "status":
 		b.load()
