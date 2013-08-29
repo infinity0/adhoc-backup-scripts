@@ -1,7 +1,5 @@
 #!/bin/sh
-# Transparently mirror files on a system into a git repo.
-#
-# TODO: get rid of bind-mount stuff and use bmount instead.
+# Track and restore system files and metadata in git. Use together with bmount.
 #
 # Usage example:
 #
@@ -9,292 +7,65 @@
 # $ git config alias.meta "!<path/to/setgitperms.pl> -n"
 #
 # # to backup
-# $ git init && git-etc init
-# $ git-etc track /etc/apache2/sites-available && git-etc bind
+# $ git-etc init
+# $ bmount insert /etc/apache2/sites-available /etc/apt
 # $ git add . && git commit
 #
 # # to restore
 # $ git clone <url> && git-etc init
 # $ git-etc install
+#
+# TODO: add the functionality from rsconf that automatically detects changed or
+# new configs (relative to dpkg's database) in /etc
 
+SCRIPT_SELF="$(readlink -f "$0")"
+SCRIPT_HOME="$(dirname "$SCRIPT_SELF")"
 
-ERR_HOST_NOT_GIT=13
-ERR_HOST_NOT_DIR=14
-ERR_BIND_NOT_FILE=15
-ERR_MTAB_SYMLINK=16
-ERR_REPO_NOT_GITETC=17
-ERR_BOUND_INCOMPLETE=18
-ERR_PWD_IN_HOST=19
-ERR_NO_TARGET_OR_SOURCE=20
-ERR_BINDPOINT_L_NOTSUPPORTED=23
-ERR_BINDPOINT_NOT_FLD=24
-ERR_BINDPOINT_TYPE_MISMATCH=25
-ERR_SOURCE_IN_HOST=26
-ERR_SOURCE_TRAVERSES_LINKS=27
-ERR_SOURCE_ALREADY_DEFINED=28
-ERR_DUPES_BIND=32
-ERR_DUPES_MTAB=33
-ERR_GIT_META_NOT_FOUND=36
+LIBDIR="$SCRIPT_HOME/lib"
+DATADIR="$SCRIPT_HOME/share"
+
 ERR_PERL_LCHOWN_NOT_FOUND=37
+ERR_GIT_DIFF_NON_EMPTY=38
 
 set -o errexit
 
-auto_find_host() {
-	local host="$PWD"
-	local found=false
-	while [ "$host" != / ]; do
-		host="$(dirname "$host")"
-		if [ -f "$host/.bind" ]; then found=true; break; fi
-	done
-	$found && echo "$host" || echo "$PWD"
-}
-
-init_env() {
-	HOST="$(test -n "$1" && echo "$1" || auto_find_host)"
-	HOST_ABS=$(readlink -f "$HOST")
-	HOST_BIND="$HOST/.bind"
-	TMP_BIND="$HOST/.bind.tmp"
-	TMP_MTAB="$HOST/.mtab.tmp"
-
-	# clean up temp files
-	trap 'rm -f '"$TMP_BIND"' '"$TMP_MTAB" EXIT INT TERM
-
-	if [ ! -d "$HOST_ABS" ]; then
-		echo >&2 "not a directory: $HOST_ABS"
-		exit $ERR_HOST_NOT_DIR
-	fi
-
-	cd "$HOST_ABS"
-	GIT_DIR="$HOST_ABS/$(
-	if ! git rev-parse --git-dir; then
-		echo >&2 "not controlled by git: $HOST_ABS"
-		exit $ERR_HOST_NOT_GIT
-	fi
-	)"
-	cd "$OLDPWD"
-	export GIT_DIR
-}
-
 pre_test() {
-	if [ "/proc/mounts" = "$(readlink /etc/mtab)" ]; then
-		cat >&2 <<-EOF
-		/etc/mtab is a symlink to /proc/mounts. This means bind-mount information isn't
-		easily available. To fix this, please:
-
-		- umount all current bind-mounts (ones you manually set up with mount --bind)
-		- $ sudo rm /etc/mtab && sudo cat /proc/mounts | sudo tee /etc/mtab
-		- re-mount all previous bind-mounts
-
-		See mount(8) for details on what this does exactly, in particular the section on
-		"The /etc/fstab, /etc/mtab and /proc/mounts files."
-		EOF
-		exit $ERR_MTAB_SYMLINK
-	fi
-
-	if ! grep -Rq "git meta" "$GIT_DIR/hooks"; then
+	local h="$(git rev-parse --git-dir)/hooks"
+	if ! grep -Rq "git meta" "$h"; then
 		echo >&2 "not a git-etc-enabled git repo. run $0 init to fix this."
 		exit $ERR_REPO_NOT_GITETC
 	fi
 }
 
-bind_test() {
-	# when doing a bind/unbind, exit if $PWD is inside $HOST_ABS
-	local curdir=$(pwd -P)
-	if [ "${curdir#$HOST_ABS/}" != "$curdir" ]; then
-		echo >&2 "cd to $HOST_ABS before attempting to operate on it"
-		exit $ERR_PWD_IN_HOST
-	fi
-}
-
-sort_bind() {
-	sort -k1 "$@" <"$HOST_BIND"
-}
-
-p_with_bind() {
-	while read source; do
-		"$@" "$source"
-	done
-}
-
-p_with_mtab() {
-	while read source target mtype opts dump pass; do
-		if ( IFS=","; is_bind_mount $opts ) && \
-		  [ "$target" != "${target#$HOST_ABS/}" ]; then
-			"$@" "$source" "$target" "$mtype" "$opts" "$dump" "$pass"
-		fi
-	done
-}
-
-is_bind_mount() {
-	while [ $# -gt 0 ]; do
-		if [ "$1" = "bind" ]; then return 0; fi
-		shift
-	done
-	return 1
-}
-
-with_bind() { p_with_bind "$@" <"$HOST_BIND"; }
-bind_get_source() { echo "$1"; }
-
-bind_source_apply() {
-	local p1="$1"
-	shift
-	"$p1" "$1"
-}
-
-with_mtab() { p_with_mtab "$@" </etc/mtab; }
-mtab_get_source() { echo "$1"; }
-
-mtab_target_for_source() {
-	local source="$1"
-	shift
-	if [ "$source" = "$1" ]; then echo "$2"; fi;
-}
-
-print_dupes() {
-	# assumes $1 is sorted already
-	sort -u "$1" | comm -13 - "$1"
-}
-
-is_bound() {
-	if [ ! -f "$HOST_BIND" ]; then
-		echo >&2 "not a file: $HOST_BIND"
-		exit $ERR_BIND_NOT_FILE
-	fi
-	with_bind bind_get_source | sort > "$TMP_BIND"
-	with_mtab mtab_get_source | sort > "$TMP_MTAB"
-	if [ -n "$(print_dupes $TMP_BIND)" ]; then
-		echo "duplicate entries in bind: "
-		print_dupes "$TMP_BIND"
-		exit $ERR_DUPES_BIND
-	fi
-	if [ -n "$(print_dupes $TMP_MTAB)" ]; then
-		echo "duplicate entries in mtab: "
-		print_dupes "$TMP_MTAB"
-		exit $ERR_DUPES_MTAB
-	fi
-	if diff -q "$TMP_BIND" "$TMP_MTAB" >/dev/null; then
-		return 0
-	elif [ ! -s "$TMP_MTAB" ]; then
-		return 1
-	else
-		echo "incomplete bind state. either mount all of (1) or umount all of (2) and (3):"
-		echo
-		echo "(1) defined in bind file but not present in mtab:"
-		comm -23 "$TMP_BIND" "$TMP_MTAB" | while read source; do
-			echo "$source	to-be-mounted on $HOST_ABS$source"
-		done
-		echo
-		echo "(2) present in mtab but not defined in bind file:"
-		comm -13 "$TMP_BIND" "$TMP_MTAB" | while read source; do
-			echo -n "$source	currently-mounted on "
-			with_mtab mtab_target_for_source "$source"
-		done
-		echo
-		echo "(3) present in mtab *and* defined in bind file:"
-		comm -12 "$TMP_BIND" "$TMP_MTAB" | while read source; do
-			echo -n "$source	currently-mounted on "
-			with_mtab mtab_target_for_source "$source"
-		done
-		exit $ERR_BOUND_INCOMPLETE
-	fi
-}
-
-file_type() {
-	if [ ! -e "$1" ]; then echo "!"; return; fi
-	case $(stat -c %A "$1") in
-	-*)	echo "f";;
-	l*)	echo "l";;
-	d*)	echo "d";;
-	*)	echo >&2 "not a directory or file or symlink: $origin"
-		exit $ERR_BINDPOINT_NOT_FLD
-		;;
-	esac
-}
-
-ensure_mirror() {
-	# assumes origin exists
-	local origin="$1"
-	local mirror="$2"
-	local sudo="$3"
-	local origin_t=$(file_type "$origin")
-	local mirror_t=$(file_type "$mirror")
-	case "$origin_t$mirror_t" in
-	l?)	err_symlink_not_supported "$origin";;
-	?l)	err_symlink_not_supported "$mirror";;
-	ff)	return ;;
-	dd)	return ;;
-	f!)
-		$sudo mkdir -p "$(dirname "$mirror")"
-		$sudo touch "$mirror"
-		;;
-	d!)
-		$sudo mkdir -p "$mirror"
-		;;
-	*)	echo >&2 "mismatching filetypes:"
-		echo >&2 "$origin_t $origin"
-		echo >&2 "$mirror_t $mirror"
-		exit $ERR_BINDPOINT_TYPE_MISMATCH
-	esac
-}
-
-err_symlink_not_supported() {
-	echo >&2 "currently we do not support tracking symlinks because mount(8) does not support "
-	echo >&2 "bind-mount on symlinks - it transparently dereferences it to the target. this "
-	echo >&2 "is their bug and hopefully will be resolved in the future. offending file: "
-	echo >&2 "$1"
-	echo >&2 "a workaround is to track the parent directory, and git-add only the symlink."
-	exit $ERR_BINDPOINT_L_NOTSUPPORTED
-}
-
-do_bind() {
-	# this doesn't call bind_test, so prefer gitetc_bind
-	local source="$1"
-	local target="$HOST/$source"
-	if [ -e "$target" ]; then
-		ensure_mirror "$HOST/$source" "$source" sudo
-	elif [ -e "$source" ]; then
-		ensure_mirror "$source" "$HOST/$source"
-	else
-		echo >&2 "neither source nor target exist:"
-		echo >&2 "$source"
-		echo >&2 "$target"
-		exit $ERR_NO_TARGET_OR_SOURCE
-	fi
-	sudo mount -B "$source" "$target"
-}
-
-do_unbind() {
-	# this doesn't call bind_test, so prefer gitetc_unbind
-	local source="$1"
-	local target="$HOST/$source"
-	sudo umount "$target"
-}
-
 git_install_hook() {
-	if [ -e "$1/$2" ]; then
-		echo "git hook $2 already exists; please incorporate the following into it:"
-		echo "-- $1/$2"
-		cat
+	local hdir="$1"
+	local htype="$2"
+	local hname="$3"
+	local cleanmarker="## clean $hname ##"
+	local hfile="$hdir/$htype"
+	if [ -e "$hfile" ] && ! grep -qF "$cleanmarker" "$hfile"; then
+		echo "git hook $htype already exists; please incorporate the following into it:"
+		echo "-- $hfile"
+		echo "#!/bin/sh"; cat
 		echo "-- EOF"
 	else
-		cat > "$1/$2"
-		chmod +x "$1/$2"
+		{ echo "#!/bin/sh"; echo "$cleanmarker"; cat; } > "$hfile"
+		chmod +x "$hfile"
 	fi
 }
 
 git_install_meta_r_hook() {
-	cat << EOF | git_install_hook "$@"
-#!/bin/sh
+	cat << EOF | git_install_hook "$@" git_meta_r_hook
 if git config --get alias.meta >/dev/null; then
 	SUBDIRECTORY_OK=1 . git-sh-setup
 	cd_to_toplevel
 	require_work_tree
 	git meta -r
-	for host_bind in \$(grep -o -P '(^|.*/).bind\s' ".gitmeta"); do
-		while read source ; do
+	for host_bind in \$(grep -o -P '(^|.*/).bmrc\s' ".gitmeta"); do
+		tail -n+2 "\$host_bind" | while read source ; do
+			source="\${source%/}"
 			echo "\$(dirname "\$host_bind")/\${source#/}"
-		done <"\$host_bind"
+		done
 	done | sed -e 's|^\./\+||g' | sort -u | grep -vxF '.' | grep -F -f- ".gitmeta" > ".gitmeta.new"
 	mv ".gitmeta.new" ".gitmeta"
 	git add ".gitmeta"
@@ -303,96 +74,59 @@ EOF
 }
 
 git_install_meta_w_hook() {
-	cat << EOF | git_install_hook "$@"
+	cat << EOF | git_install_hook "$@" git_meta_w_hook
 #!/bin/sh
+## git_meta_w_hook ##
 if git config --get alias.meta >/dev/null; then
 	git meta -w
 fi
 EOF
 }
 
-gitetc_track() {
-	touch "$HOST_BIND"
-	local was_bound=false
-	if is_bound; then
-		was_bound=true
-		gitetc_unbind
-	fi
-	# TODO: prevent when a parent of $source already exists
-	# TODO: prevent when a child of $source already exists, or give option to remove child
-	# both of these should allow us to get rid of the sorts in unbind/bind, and the unbind-then-bind complexity here
-	local source="$(readlink -f "$(dirname "$1")")/$(basename "$1")"
-	if [ "$source" != "${1%/}" ]; then
-		echo >&2 "source traverses symlinks: $source"
-		echo >&2 "we only store canonical paths or the symlink itself"
-		exit $ERR_SOURCE_TRAVERSES_LINKS
-	elif [ "$source" != "${source#$HOST_ABS/}" ]; then
-		echo >&2 "source inside host: $source, $HOST_ABS"
-		exit $ERR_SOURCE_IN_HOST
-	elif with_bind bind_get_source | grep -qxF "$source"; then
-		echo >&2 "source already defined in bind file: $source"
-		exit $ERR_SOURCE_ALREADY_DEFINED
-	elif [ -h "$source" ]; then
-		err_symlink_not_supported "$source"
-	fi
-	echo "$source" >> "$HOST_BIND"
-	sort_bind -o "$HOST_BIND"
-	if $was_bound; then
-		gitetc_bind
-	fi
-}
-
-gitetc_unbind() {
-	bind_test
-	if is_bound; then
-		sort_bind -r | p_with_bind bind_source_apply do_unbind
-	fi
-}
-
-gitetc_bind() {
-	bind_test
-	if ! is_bound; then
-		sort_bind | p_with_bind bind_source_apply do_bind
-	fi
-}
-
-gitetc_status() {
-	if is_bound; then
-		echo "BOUND on '$HOST'"
-	else
-		echo "NOT BOUND on '$HOST'"
-	fi
-}
-
 gitetc_init() {
-	local h="$GIT_DIR/hooks"
+	git init
 	if ! git config --get alias.meta > /dev/null; then
-		echo >&2 "you need to setup a git alias 'meta' to point to the setgitperms.perl script. "
-		echo >&2 "note: you are advised to use the -n option, which saves user/group names "
-		echo >&2 "rather than uid/gid."
-		exit $ERR_GIT_META_NOT_FOUND
+		git config alias.meta "!$LIBDIR/setgitperms.perl -n"
+		echo >&2 "I set up a local git alias 'meta' to point to the setgitperms.perl script. "
+		echo >&2 "You are recommended to remove this and use a global alias instead."
 	elif ! echo "use Lchown;" | perl; then
 		echo >&2 "you need to install the Lchown perl module, also called liblchown-perl."
 		exit $ERR_PERL_LCHOWN_NOT_FOUND
 	fi
+	local h="$(git rev-parse --git-dir)/hooks"
 	git_install_meta_r_hook "$h" pre-commit
 	git_install_meta_w_hook "$h" post-checkout
 	git_install_meta_w_hook "$h" post-merge
+	bmount init import
 }
 
 gitetc_install() {
-	gitetc_bind
-	sudo git checkout .
+	if ! git diff --quiet; then
+		echo >&2 "abort: git detected changes"
+		git status
+		exit $ERR_GIT_DIFF_NON_EMPTY
+	fi
+	sudo $(which bmount) -u . umountAll
+	git checkout . # make sure entry points exist with non-root permission
+	sudo $(which bmount) -u . mountAll
+	bmount list | while read pp; do
+		local pp_rel="${pp#/}"
+		if [ -d "$pp_rel" ]; then
+			sudo git checkout "$pp_rel"
+		else
+			# git checkout tries to unlink, which doesn't work for bind-mounted files
+			git cat-file -p $(git rev-parse "HEAD:$pp_rel") | sudo tee "$pp_rel" >/dev/null
+		fi
+	done
 	local git_meta="$(git config --get alias.meta)"
 	sudo ${git_meta#!} -w
-	git checkout .  # re-init index with user's own perms
+	git diff # re-init index with user's own perms
 }
 
-USAGE="Usage: $0 [-r <root>] [-h] <subcmd> [<args>]"
+USAGE="Usage: $0 [-h] [init|install]"
 
 while getopts r:h o; do
 	case $o in
-	r ) ROOT="$OPTARG";;
 	h ) subcmd=help;;
 	\? ) subcmd=?;;
 	esac
@@ -404,15 +138,11 @@ subcmd="${subcmd:-?}"
 
 case $subcmd in
 init)
-	shift
-	init_env "$ROOT"
-	"gitetc_$subcmd" "$@"
+	gitetc_init
 	;;
-status|track|untrack|bind|unbind|install)
-	shift
-	init_env "$ROOT"
+install)
 	pre_test
-	"gitetc_$subcmd" "$@"
+	gitetc_install
 	;;
 help)
 	cat <<EOF
@@ -421,17 +151,6 @@ $USAGE
 subcommands (git repo):
 init                set up this repo as a git-etc repo (add hooks, etc)
 install             checkout files to / and set correct permissions.
-
-subcommands (mirror):
-status              print the bound status of the mirror
-track <source>      add a dir/file to the mirror
-untrack <source>    remove a dir/file from the mirror (TODO implement this)
-bind                add bind mounts for the mirror's contents
-unbind              remove bind mounts for the mirror's contents
-
-options:
--r <ROOT>           path to the base of the mirror. defaults to the nearest
-                    ancestor directory with a .bind file, or else \$PWD.
 EOF
 	;;
 *)

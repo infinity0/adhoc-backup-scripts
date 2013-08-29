@@ -1,6 +1,7 @@
 #!/usr/bin/python
-# TODO(infinity0): copy introduction from git-etc
-
+"""
+Mirror subtrees between different parts of the filesystem using bind-mounts.
+"""
 import argparse
 import logging
 import os
@@ -56,6 +57,7 @@ def f_type(p):
 def f_make(p, t):
 	assert not os.path.islink(p) # must never call this with a symlink
 	par = os.path.dirname(p)
+	# TODO(infinity0): try sudo if we get permission error
 	if not os.path.exists(par):
 		os.makedirs(par)
 	if t == 'f':
@@ -273,7 +275,7 @@ class Bind(object):
 			raise ValueError("cannot run in state INVALID")
 
 		for pp in sorted(set(self.points.pts) - set(self.state.pts), cmp=p_cmp):
-			self._ensureEndpoints(pp)
+			self._ensureEndpoints(pp, True)
 			self._mountTry(pp)
 
 		if self.status == 'FULL':
@@ -341,20 +343,21 @@ class Bind(object):
 			self._umountTry(pp)
 		return pp
 
-	def _ensureEndpoints(self, p, dryrun=False):
+	def _ensureEndpoints(self, p, pPointEntry, dryrun=False):
 		"""
 		Ensure that the endpoints exist for bind-mounting.
 
 		If either endpoint is a file/dir, the other must be a file/dir.
 		If one does not exist, it is created of the same type as the
-		other. If neither exist, both are created as directories.
+		other. If neither exist, both are created as directories/files .
 		"""
 		src, dst = self.getEndpoints(p)
 
 		src_t = f_type(src)
 		dst_t = f_type(dst)
 		p = os.path.join(ROOT, p) # force absolute
-		def pdIfNotSubsume():
+		def pdIfNotSubsume(t):
+			if t == 'f': return p
 			if self.source.startswith(p_to_dir(dst)):
 				raise ValueError("target point would subsume source tree: %s" % dst)
 			return p_to_dir(p)
@@ -363,21 +366,22 @@ class Bind(object):
 		# we would have to disallow it.
 
 		if src_t == dst_t == '_':
-			if not dryrun: f_make(src, 'd')
-			if not dryrun: f_make(dst, 'd')
-			return pdIfNotSubsume()
+			f_t = 'd' if not pPointEntry or p_is_dir(p) else 'f'
+			if not dryrun: f_make(src, f_t)
+			if not dryrun: f_make(dst, f_t)
+			return pdIfNotSubsume(f_t)
 		elif src_t == 'l':
 			raise ValueError("symlinks not supported due to mount(8) limitation: %s" % src)
 		elif dst_t == 'l':
 			raise ValueError("symlinks not supported due to mount(8) limitation: %s" % dst)
 		elif src_t == '_' and dst_t != '_':
 			if not dryrun: f_make(src, dst_t)
-			return pdIfNotSubsume() if dst_t == 'd' else p
+			return pdIfNotSubsume(dst_t)
 		elif src_t != '_' and dst_t == '_':
 			if not dryrun: f_make(dst, src_t)
-			return pdIfNotSubsume() if src_t == 'd' else p
+			return pdIfNotSubsume(src_t)
 		elif src_t == dst_t:
-			return pdIfNotSubsume() if src_t == 'd' else p
+			return pdIfNotSubsume(src_t)
 		else:
 			raise ValueError("conflicting types: %s, %s" % (src, dst))
 
@@ -403,7 +407,7 @@ class Bind(object):
 		# umount children first
 
 		rem = [self._removeBind(c, dryrun) for c in desc]
-		ins = [self._insertBind(self._ensureEndpoints(p, dryrun), dryrun)]
+		ins = [self._insertBind(self._ensureEndpoints(p, False, dryrun), dryrun)]
 		if not noreport: self.report("insert finished", dryrun)
 		return ins, rem
 
@@ -546,6 +550,7 @@ def main(*args):
 	subp = subps.add_parser("status", help="get the current status",
 	  description="output meanings: NONE: no points are active; FULL: all points are active; "
 	  "PARTIAL: some points are active; INVALID: extraneous points are active.")
+	subp = subps.add_parser("list", help="list all points")
 	subp = subps.add_parser("mountAll", help="mount all points")
 	subp = subps.add_parser("umountAll", help="umount all points")
 	subp = subps.add_parser("umountForce", help="in INVALID state, umount all existing points")
@@ -575,8 +580,14 @@ def main(*args):
 	b = BindFile(fn)
 
 	if opts.subcmd == "init":
-		if os.path.exists(b.fn) and not opts.yes:
-			raise ValueError("path already exists: %s" % b.fn)
+		if os.path.exists(b.fn):
+			b.load()
+			if b.args == opts.args:
+				pass
+			elif opts.yes:
+				b.init(*opts.args)
+			else:
+				raise ValueError("bindfile already exists with different args: %s" % b.args)
 		else:
 			b.init(*opts.args)
 	elif not os.path.exists(fn):
@@ -596,6 +607,11 @@ def main(*args):
 			print "active: %r" % b.bind.state.pts
 		else:
 			print b.bind.status
+
+	if opts.subcmd == "list":
+		b.load()
+		for pp in b.bind.points.pts:
+			print pp
 
 	if opts.subcmd in ["mountAll", "umountAll", "umountForce"]:
 		b.load()
