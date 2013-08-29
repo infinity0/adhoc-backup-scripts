@@ -2,12 +2,12 @@ Contents
 
 - [apt-clean](#apt-clean): clean and simplify APT package state
 - [bmount](#bmount): mirror subtrees of a filesystem
-- [git-etc](#git-etc): track system files and metadata in git
+- [git-etc](#git-etc): track/restore system files and metadata
 - [rsconf](#rsconf): simple backup framework for rsnapshot
 - [luksblk](#luksblk): manage simple LUKS block devices
 - [btsync](#btsync): synchronise a file over bittorrent
 
-rsconf+luksblk+btsync is my personal backup solution.
+Various ad-hoc tools for sysadmin/backup purposes.
 
 I'll describe why I wrote my own rather than use existing ones as well :)
 
@@ -121,28 +121,36 @@ TODO
 
 ## Related
 
-Two similar tools exist already, but weren't suited to my purposes.
+Two similar tools exist already, but weren't suited to my purposes. However,
+they may be more suitable for what you need. (+) means an advantage compared to
+bmount; (-) means a disadvantage.
 
 [etckeeper][]:
 
-- cannot handle arbitrary subtrees; tracks too many files by default, with no
-  easy way to ignore most of them
-	- e.g. I really don't care about /etc/rc*.d
-	- I also don't care about config changes due to package upgrades
+- (+) "fire and forget" - very little manual config needed to setup initially.
+  however, restoring your backup later may not be so easy, due to the spam of
+  unnecessary extra information (see next point).
+- (-) cannot handle arbitrary subtrees; tracks too many files (all of /etc) by
+  default, with no simple way to ignore most of them
+	- e.g. I really don't care about /etc/rc*.d, or /etc/ssl/certs, and I don't
+	  care about config changes due to package upgrades
 	- trivial differences (e.g. different package versions) make it hard to
 	  compare systems that are otherwise identical in the *important* areas.
-- no way to track files outside of /etc
+- (-) only one repo that is permanently active and holds everything
 - git-etc provides some additional advantages over the git-specific parts of
   etckeeper; see below. bmount+git-etc is my take on etckeeper.
 
 [live-persist][]:
 
-- like bmount, it can handle arbitrary subtrees
-- is even more flexible in the types of mirror it can handle: bind-mounts,
+- can handle arbitrary subtrees, like bmount
+- (+) is even more flexible in the types of mirror it can handle: bind-mounts,
   symlink trees, and different types of unionfs.
-- however, it can only "activate" the mirror, not deactivate it. it also does
-  not support live editing of the config (e.g. new subtrees to mirror) that
-  gets applied automatically.
+- (-) can only read config from the root of a file system
+- (-) can only activate the mirror, not deactivate it. whilst active, cannot
+  edit the config (e.g. adding new subtrees) and have it applied automatically
+  onto the existing activation.
+- intended for use with the "live-boot" system by Debian, so a bit harder to
+  install on a normal system
 
 [etckeeper]: http://joeyh.name/code/etckeeper/
 [live-persist]: http://live-systems.org/manpages/stable/en/html/persistence.conf.5.html
@@ -151,19 +159,16 @@ Two similar tools exist already, but weren't suited to my purposes.
 
 # git-etc
 
-TODO: this section is not yet complete, since git-etc is in the middle of being
-refactored to take advantage of bmount's more robust handling of bind-mounts.
+Track and restore system files and metadata in git. Use together with bmount.
 
 More advanced use case compared to etckeeper:
 
 - can put the repo somewhere other than /etc/.git
-- don't need to run as superuser, can split repo by security levels, e.g.:
+- does not need to run as root (except when restoring). therefore, can split
+  repo by security levels, e.g.:
 	- public config in a repo owned by a normal user. you can share this with
 	  others for backup/review.
 	- private config (e.g. passwords) in a repo owned by root
-
-TODO: add the functionality from rsconf that automatically detects changed or
-new configs (relative to dpkg's database) in /etc
 
 ## Pre-use
 
