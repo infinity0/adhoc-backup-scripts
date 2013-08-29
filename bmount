@@ -2,6 +2,8 @@
 """
 Mirror subtrees between different parts of the filesystem using bind-mounts.
 """
+from __future__ import print_function
+
 import argparse
 import logging
 import os
@@ -22,9 +24,9 @@ ROOT = os.getcwd()
 while ROOT != os.path.dirname(ROOT):
 	ROOT = os.path.dirname(ROOT)
 
-def p_cmp(a, b):
+def p_key(k):
 	"""Comparator that forces path children to be sorted next to its parent."""
-	return cmp(a.split(os.path.sep), b.split(os.path.sep))
+	return k.split(os.path.sep)
 
 def p_is_dir(p):
 	return p.endswith(os.path.sep)
@@ -44,9 +46,9 @@ def p_get_device(p):
 	# run separately because df doesn't escape spaces in paths
 	# TODO(infinity0): it also turns \n into ?; find better alternative
 	output = subprocess.check_output(["df", "--output=source", p])
-	source = output.split('\n')
+	source = output.decode("ascii").split('\n')
 	output = subprocess.check_output(["df", "--output=target", p])
-	target = output.split('\n')
+	target = output.decode("ascii").split('\n')
 	return source[-2], target[-2]
 
 def f_type(p):
@@ -92,7 +94,7 @@ def run_unstrict(cmd, *args, **kwargs):
 	try:
 		logging.info("running %r" % cmd)
 		subprocess.check_output(cmd, *args, **kwargs)
-	except subprocess.CalledProcessError, e:
+	except subprocess.CalledProcessError as e:
 		logging.warn("command failed: %s" % e.output)
 
 
@@ -113,8 +115,8 @@ class Points(object):
 				raise ValueError("both a file and dir: %s, %s" % (a, b))
 
 	def __init__(self, unsafe_pts=[]):
-		pts = sorted(set(unsafe_pts), cmp=p_cmp)
-		for i in xrange(len(pts)-1):
+		pts = sorted(set(unsafe_pts), key=p_key)
+		for i in range(len(pts)-1):
 			Points.checkConsistent(pts[i], pts[i+1])
 		self.pts = pts
 
@@ -126,7 +128,7 @@ class Points(object):
 		:param pp: path point entry
 		"""
 		self.pts.append(pp)
-		self.pts.sort(cmp=p_cmp)
+		self.pts.sort(key=p_key)
 		idx = self.pts.index(pp)
 		logging.debug("inserted %s @ %s in %s", pp, idx, self.pts)
 		try:
@@ -150,7 +152,7 @@ class Points(object):
 		"""
 		:param p: normalised path, no final sep
 		"""
-		parents = filter(lambda pp: p_is_dir(pp) and p.startswith(pp) and len(p) > len(pp), self.pts)
+		parents = [pp for pp in self.pts if p_is_dir(pp) and p.startswith(pp) and len(p) > len(pp)]
 		assert len(parents) <= 1 # due to disjoint restriction
 		return parents[0] if parents else None
 
@@ -166,7 +168,7 @@ class Points(object):
 		"""
 		:param p: normalised path, no final sep
 		"""
-		return filter(lambda c: c.startswith(p_to_dir(p)), self.pts)
+		return [c for c in self.pts if c.startswith(p_to_dir(p))]
 
 
 class Bind(object):
@@ -183,14 +185,14 @@ class Bind(object):
 	def _readMounts(self):
 		state = []
 		#traceback.print_stack()
-		with open(MOUNTINFO, 'r') as fp:
+		with open(MOUNTINFO, 'rb') as fp:
 			for line in fp.readlines():
-				part1, part2 = line.split(" - ") # see `man proc` for spec
-				(_, _, _, mount_rel, fs_file, _) = part1.split(" ", 5)
-				fs_file = fs_file.decode("string_escape")
-				mount_rel = mount_rel.decode("string_escape")
-				(_, fs_spec, _) = part2.split(" ", 2)
-				fs_spec = fs_spec.decode("string_escape")
+				part1, part2 = line.split(b" - ") # see `man proc` for spec
+				(_, _, _, mount_rel, fs_file, _) = part1.split(b' ', 5)
+				fs_file = fs_file.decode("unicode_escape")
+				mount_rel = mount_rel.decode("unicode_escape")
+				(_, fs_spec, _) = part2.split(b' ', 2)
+				fs_spec = fs_spec.decode("unicode_escape")
 				# TODO(infinity0): technically we should ignore mount points that are buried
 				# under other mount points. But really if your system is like that, why the
 				# fuck are you using this tool?
@@ -226,9 +228,9 @@ class Bind(object):
 			try:
 				self._state = Points(self._readMounts())
 				self._state_mtime = mtime
-			except Exception, e:
+			except Exception as e:
 				traceback.print_exc()
-				logging.warn("unable to parse current bind state: %s", e.message)
+				logging.warn("unable to parse current bind state: %s", e)
 				logging.warn("I will continue, but avoid touching the system")
 				logging.warn("You may also run umountForce to try to fix the issue")
 				self._state = Points(["/invalid_state_detected"])
@@ -274,7 +276,7 @@ class Bind(object):
 		elif status == 'INVALID':
 			raise ValueError("cannot run in state INVALID")
 
-		for pp in sorted(set(self.points.pts) - set(self.state.pts), cmp=p_cmp):
+		for pp in sorted(set(self.points.pts) - set(self.state.pts), key=p_key):
 			self._ensureEndpoints(pp, True)
 			self._mountTry(pp)
 
@@ -463,12 +465,12 @@ class BindFile(object):
 		self.parseArgs(*args) # ensure valid
 		self.args = args
 		with open(self.fn, 'w') as fp:
-			print >>fp, "\t".join(self.args)
+			print("\t".join(self.args), file=fp)
 		logging.debug("file wrote: %s", self.fn)
 		self.load()
 
 	def load(self):
-		# TODO(infinity0): decode("string_escape") for annoying people that use \t,\n
+		# TODO(infinity0): decode("unicode_escape") for annoying people that use \t,\n
 		with open(self.fn, 'r') as fp:
 			args = read_significant_line(fp).rstrip("\n").split("\t")
 			points = list(read_significant_lines(fp))
@@ -502,11 +504,11 @@ class BindFile(object):
 		if self.bind is None:
 			raise ValueError("not loaded")
 
-		# TODO(infinity0): encode("string_escape") for annoying people that use \t,\n
+		# TODO(infinity0): encode("unicode_escape") for annoying people that use \t,\n
 		with open(self.fn, 'w') as fp:
-			print >>fp, "\t".join(self.args)
+			print("\t".join(self.args), file=fp)
 			for pp in self.bind.points.pts:
-				print >>fp, pp
+				print(pp, file=fp)
 		logging.debug("file wrote: %s", self.fn)
 
 	def insert(self, *pps):
@@ -530,7 +532,7 @@ def main(*args):
 	group.add_argument("-d", "--down", help="search this and descendants for the bindfile.",
 	  metavar='DIR', dest='binddir_down')
 	parser.add_argument("-v", "--verbose", help="increase output verbosity",
-	  action="count")
+	  action="count", default=0)
 	subps = parser.add_subparsers(help="sub-command to run",
 	  metavar="SUBCMD", dest='subcmd')
 
@@ -600,18 +602,18 @@ def main(*args):
 	if opts.subcmd == "status":
 		b.load()
 		if opts.verbose >= 1:
-			print "file: %s" % b.fn
-			print "args: %s" % ','.join(b.args)
-			print "status: %s" % b.bind.status
-			print "wanted: %r" % b.bind.points.pts
-			print "active: %r" % b.bind.state.pts
+			print("file: %s" % b.fn)
+			print("args: %s" % ','.join(b.args))
+			print("status: %s" % b.bind.status)
+			print("wanted: %r" % b.bind.points.pts)
+			print("active: %r" % b.bind.state.pts)
 		else:
-			print b.bind.status
+			print(b.bind.status)
 
 	if opts.subcmd == "list":
 		b.load()
 		for pp in b.bind.points.pts:
-			print pp
+			print(pp)
 
 	if opts.subcmd in ["mountAll", "umountAll", "umountForce"]:
 		b.load()
@@ -627,9 +629,9 @@ class Test(unittest.TestCase):
 		self.assertEquals(p_to_rel(os.curdir), os.curdir)
 		self.assertTrue(os.path.join('a', p_to_rel(os.getcwd())).startswith('a'))
 
-	def test_p_cmp(self):
+	def test_p_key(self):
 		self.assertEquals(sorted(['x', 'xa', 'x+', 'x/']), ['x', 'x+', 'x/', 'xa'])
-		self.assertEquals(sorted(['x', 'xa', 'x+', 'x/'], cmp=p_cmp), ['x', 'x/', 'x+', 'xa'])
+		self.assertEquals(sorted(['x', 'xa', 'x+', 'x/'], key=p_key), ['x', 'x/', 'x+', 'xa'])
 
 	def test_Points_dup(self):
 		self.assertRaises(ValueError, Points, ['/a', '/a/'])
