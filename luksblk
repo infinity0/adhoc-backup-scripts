@@ -2,6 +2,8 @@
 # High-level tools for managing a LUKS block device used for backup
 #
 # see `help` for summary of subcommands and environment variables
+#
+# TODO(infinity0): add functionality of prep-crypto
 
 BLK="${BLK:-block}"
 BLK_FS="${BLK_FS:-ext4}"

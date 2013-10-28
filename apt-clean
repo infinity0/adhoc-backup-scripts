@@ -227,5 +227,5 @@ echo "apt-clean done."
 
 if $USING_GIT && ! git diff --quiet; then
 	git diff
-	git_commit_state "commit changes?" "update package state"
+	git_commit_state "commit changes?" "$STATE: update package state"
 fi
