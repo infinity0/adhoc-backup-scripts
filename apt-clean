@@ -166,6 +166,18 @@ fi
 while $imperfect; do
 imperfect=false
 
+user_run 'block-rec' '~RBrecommends:~i' 'broken recommends' \
+  "keep uninstalled, even if recommended by another installed package.\n  - You might do this if e.g. it takes up too much space, or it conflicts with another installed package" \
+  "installed" \
+  aptitude --prompt install \
+  || imperfect=true
+
+user_run 'block-imp' "~pimportant $CUR_ARCH !~i" 'uninstalled important packages' \
+  "keep uninstalled, which should only be packages where a functional alternative (e.g. a different version or flavour) is already installed" \
+  "installed" \
+  aptitude --prompt install \
+  || imperfect=true
+
 user_run 'manual-sub' "~i !($ESSENTIAL) !($TOP_LEVEL) !~M" 'not top-level, non-automatic' \
   "keep installed, even if (theoretically, in the future) nothing else depends on it" \
   "marked automatic, which means it will be removed if no longer required, but otherwise kept" \
@@ -176,6 +188,12 @@ user_run 'auto-abstop' "~i !($ESSENTIAL) $ABS_TOP_LEVEL ~M" 'abs-top-level, auto
   "be automatically removed. They will no longer show up here next time, which is what you want" \
   "marked manual, which means it will be retained even if nothing else depends on it" \
   aptitude --prompt unmarkauto \
+  || imperfect=true
+
+user_run 'manual-top' "~i !($ESSENTIAL) $TOP_LEVEL !~M" 'top-level, non-automatic' \
+  "keep installed, even if nothing else depends on it" \
+  "removed, which may benignly cause other autoremovals and another round to be executed" \
+  aptitude --prompt remove \
   || imperfect=true
 
 user_run 'auto-top' "~i !($ESSENTIAL) $TOP_LEVEL ~M" 'top-level, automatic' \
@@ -190,28 +208,10 @@ user_run 'keep-config' '~c' 'uninstalled but with configuration' \
   aptitude --prompt purge \
   || imperfect=true
 
-user_run 'block-rec' '~RBrecommends:~i' 'broken recommends' \
-  "keep uninstalled, even if recommended by another installed package.\n  - You might do this if e.g. it takes up too much space, or it conflicts with another installed package" \
-  "installed" \
-  aptitude --prompt install \
-  || imperfect=true
-
-user_run 'block-imp' "~pimportant $CUR_ARCH !~i" 'uninstalled important packages' \
-  "keep uninstalled, which should only be packages where a functional alternative (e.g. a different version or flavour) is already installed" \
-  "installed" \
-  aptitude --prompt install \
-  || imperfect=true
-
 user_run 'maybe-dummy' "~i !($ESSENTIAL) $TOP_LEVEL (~ddummy|~dtransitional|~d\"safely removed\")" 'possibly transitional or dummy packages' \
   "keep installed, i.e. for which the heuristic (simple regex) we use here is incorrect" \
   "purged, since it is simply a dummy or transitional package.\n  - $LOCALITY_CAVEAT" \
   aptitude --prompt purge \
-  || imperfect=true
-
-user_run 'manual-top' "~i !($ESSENTIAL) $TOP_LEVEL !~M" 'top-level, non-automatic' \
-  "keep installed, even if nothing else depends on it" \
-  "removed, which may benignly cause other autoremovals and another round to be executed" \
-  aptitude --prompt remove \
   || imperfect=true
 
 if $imperfect; then
