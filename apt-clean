@@ -166,7 +166,7 @@ fi
 while $imperfect; do
 imperfect=false
 
-user_run 'block-rec' '~RBrecommends:~i' 'broken recommends' \
+user_run 'block-rec' '~RBrecommends:~i !~i' 'broken recommends' \
   "keep uninstalled, even if recommended by another installed package.\n  - You might do this if e.g. it takes up too much space, or it conflicts with another installed package" \
   "installed" \
   aptitude --prompt install \
