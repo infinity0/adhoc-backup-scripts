@@ -115,7 +115,7 @@ git_commit_state() {
 ESSENTIAL='~prequired|~pimportant|~E'
 TOP_LEVEL='!~Rpredepends:~i !~Rdepends:~i !~Rrecommends:~i'
 ABS_TOP_LEVEL="$TOP_LEVEL"' !~Rsuggests:~i'
-CUR_ARCH='~r'"$(dpkg --print-architecture)"
+CUR_ARCH='~rnative'
 
 LOCALITY_CAVEAT="This shouldn't affect other packages not listed here - i.e. the aptitude prompt that follows should not contain any non-trivial {a} entries. If it does, then you should have selected extra packages - abort the command by selecting NO, and we will schedule another round for you to fix the problem"
 
@@ -153,7 +153,7 @@ touch "$STATE" "$STATE.tmp" "$STATE.round" || abort 3 "cannot write to one of $S
 cleanup() { rm -f "$STATE.tmp" "$STATE.round" 2>/dev/null; exit; }
 trap cleanup EXIT
 
-test -z "$(aptitude search "(~prequired|~E) $CUR_ARCH !~i")" || abort 4 "Your system appears to be FUBAR, try `aptitude install '(~prequired|~E) $CUR_ARCH'`."
+test -z "$(aptitude search "(~prequired|~E) $CUR_ARCH !~i")" || abort 4 "Your system appears to be FUBAR, try \`aptitude install '(~prequired|~E) $CUR_ARCH'\`."
 test -n "$(git ls-tree HEAD -- "$STATE")" && USING_GIT=true
 
 if ! $USING_GIT; then
