@@ -15,10 +15,8 @@
 # TODO: add the functionality from rsconf that automatically detects changed or
 # new configs (relative to dpkg's database) in /etc
 
-SCRIPT_SELF="$(readlink -f "$0")"
-SCRIPT_HOME="$(dirname "$SCRIPT_SELF")"
-
-LIBDIR="$SCRIPT_HOME/lib"
+# development directories, override on install
+SCRIPT_HOME="$(dirname "$(readlink -f "$0")")"
 DATADIR="$SCRIPT_HOME/share"
 
 ERR_GIT_META_NOT_FOUND=36

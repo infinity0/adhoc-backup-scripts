@@ -3,10 +3,8 @@
 #
 # See examples/backup.list for an example config.
 
-SCRIPT_SELF="$(readlink -f "$0")"
-SCRIPT_ROOT="$(dirname "$SCRIPT_SELF")"
-
-LIBDIR="$SCRIPT_HOME/lib"
+# development directories, override on install
+SCRIPT_HOME="$(dirname "$(readlink -f "$0")")"
 DATADIR="$SCRIPT_HOME/share"
 
 abort() { local x="$1"; shift; echo >&2 "rsconf: $@"; exit $x; }

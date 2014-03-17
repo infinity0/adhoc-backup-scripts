@@ -2,6 +2,10 @@
 # Synchronise snapshots of a dynamic file to multiple peers over bittorrent.
 # TODO: use GPG to sign the torrents and distribute the signatures as well
 
+# development directories, override on install
+SCRIPT_HOME="$(dirname "$(readlink -f "$0")")"
+LIBDIR="$SCRIPT_HOME/lib"
+
 ################################################################################
 ## script constants
 ################################################################################
@@ -313,8 +317,7 @@ _augment_path() {
 
 _ensure_xmlrpc2scgi() {
 	if ! which xmlrpc2scgi.py >/dev/null; then
-		_augment_path "$CWD" xmlrpc2scgi.py || \
-		_augment_path "$(dirname "$(readlink -f "$0")")/lib" xmlrpc2scgi.py || \
+		_augment_path "$LIBDIR" xmlrpc2scgi.py || \
 		abort $ERR_BIN_NOT_FOUND "could not locate xmlrpc2scgi.py"
 	fi
 }
