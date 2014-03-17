@@ -1,6 +1,0 @@
-# backup files when installed
-/examples/archive
-/examples/archive.conf
-/examples/current
-/examples/current.conf
-/examples/rsnapshot.crontab
