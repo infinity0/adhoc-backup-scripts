@@ -3,9 +3,6 @@
 #
 # Usage example:
 #
-# # to set up git-etc on your system
-# $ git config alias.meta "!<path/to/setgitperms.pl> -n"
-#
 # # to backup
 # $ git-etc init
 # $ bmount insert /etc/apache2/sites-available /etc/apt
@@ -24,6 +21,7 @@ SCRIPT_HOME="$(dirname "$SCRIPT_SELF")"
 LIBDIR="$SCRIPT_HOME/lib"
 DATADIR="$SCRIPT_HOME/share"
 
+ERR_GIT_META_NOT_FOUND=36
 ERR_PERL_LCHOWN_NOT_FOUND=37
 ERR_GIT_DIFF_NON_EMPTY=38
 
@@ -85,10 +83,9 @@ EOF
 
 gitetc_init() {
 	git init
-	if ! git config --get alias.meta > /dev/null; then
-		git config alias.meta "!$LIBDIR/setgitperms.perl -n"
-		echo >&2 "I set up a local git alias 'meta' to point to the setgitperms.perl script. "
-		echo >&2 "You are recommended to remove this and use a global alias instead."
+	if ! which git-meta > /dev/null; then
+		echo >&2 "you need to add git-meta to your path."
+		exit $ERR_GIT_META_NOT_FOUND
 	elif ! echo "use Lchown;" | perl; then
 		echo >&2 "you need to install the Lchown perl module, also called liblchown-perl."
 		exit $ERR_PERL_LCHOWN_NOT_FOUND
