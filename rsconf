@@ -6,6 +6,8 @@
 SCRIPT_SELF="$(readlink -f "$0")"
 SCRIPT_ROOT="$(dirname "$SCRIPT_SELF")"
 
+LIBDIR="$SCRIPT_HOME/lib"
+DATADIR="$SCRIPT_HOME/share"
 
 abort() { local x="$1"; shift; echo >&2 "rsconf: $@"; exit $x; }
 
@@ -131,7 +133,7 @@ make_backup_points() {
 }
 
 get_scheme_path() {
-	echo "$SCRIPT_ROOT/share/${1%.scheme}.scheme"
+	echo "$DATADIR/${1%.scheme}.scheme"
 }
 
 get_scheme_path_for_root() {
@@ -154,9 +156,9 @@ generate_conf() {
 	local backup="$3"
 	cat <<-EOF
 	## rsconf auto-generated rsnapshot configuration
-	## re-generate using \$ "$SCRIPT_SELF" generate_conf "$1" "$2" "$3"
+	## re-generate using \$ "$0" generate_conf "$1" "$2" "$3"
 
-	include_conf	$SCRIPT_ROOT/share/rsnapshot.inc
+	include_conf	$DATADIR/rsnapshot.inc
 	snapshot_root	$backup_root/$backup
 	lockfile	$backup_root/$backup/rsnapshot.pid
 
@@ -169,7 +171,7 @@ generate_conf() {
 
 	## Backup points
 
-	include_conf	\`$SCRIPT_SELF backup_list_points "$backup_root/backup.list" "$backup"\`
+	include_conf	\`$0 backup_list_points "$backup_root/backup.list" "$backup"\`
 	EOF
 }
 
