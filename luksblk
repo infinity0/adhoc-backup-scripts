@@ -63,10 +63,10 @@ _state_in() {
 	return 1
 }
 
-SILENT_PRECOND=false
-_precond() { _state_in "$@" || { $SILENT_PRECOND || echo >&2 "precondition not fufilled: current state not one of $@"; exit 1; }; }
+SILENT_PRECOND="${SILENT_PRECOND:-false}"
+_precond() { _state_in "$@" || { $SILENT_PRECOND || echo >&2 "precondition not fufilled: current state not one of $@"; return 1; }; }
 # sleep 0.2 since udev can take a while to apply settings
-_postcond() { sleep 0.2; _state_in "$@" || { echo >&2 "postcondition not fufilled (bug?): current state not one of $@"; exit 127; }; }
+_postcond() { _state_in "$@" || { echo >&2 "postcondition not fufilled (bug?): current state not one of $@"; return 127; }; }
 
 log() { echo >&2 "$@"; }
 
@@ -106,6 +106,7 @@ file_init() {
 }
 
 file_expose() {
+	_postcond $S_CRYPT_PREINIT $S_CRYPT_AVAIL 2>/dev/null && return
 	_precond $S_NODEV_FILE
 	local DEV="$(sudo losetup --show -f "$BLK.img" || exit 1)"
 	ln -sf "$DEV" "$BLK_DEV"
@@ -114,6 +115,7 @@ file_expose() {
 }
 
 file_unexpose() {
+	_postcond $S_NODEV_FILE 2>/dev/null && return
 	_precond $S_CRYPT_PREINIT $S_CRYPT_AVAIL
 	if sudo losetup -j "$BLK.img" | grep -q "$(readlink -f "$BLK_DEV")"; then
 		sudo losetup -d "$DEV"
@@ -178,6 +180,7 @@ blk_init() {
 }
 
 blk_mount() {
+	_postcond $S_PLAIN_MOUNTED 2>/dev/null && return
 	_precond $S_CRYPT_AVAIL
 	test -d "$BLK_MNT" || {
 		log "creating mount point: $BLK_MNT"
@@ -190,6 +193,7 @@ blk_mount() {
 }
 
 blk_umount() {
+	_postcond $S_CRYPT_AVAIL 2>/dev/null && return
 	_precond $S_PLAIN_MOUNTED
 	sudo umount "/dev/mapper/$BLK_CRYPT" || true
 	sudo cryptsetup luksClose "$BLK_CRYPT"
@@ -213,16 +217,14 @@ blk_compound() {
 		;;
 	*_mount)
 		local type="${subcmd%_mount}"
-		SILENT_PRECOND=true
-		("${type}_expose") || true
-		SILENT_PRECOND=false
+		# `(subshell) || true` would unrecoverably cancel errexit inside the subshell
+		SILENT_PRECOND=true sh "$0" "${type}_expose" || true
 		blk_mount
 		;;
 	*_umount)
 		local type="${subcmd%_umount}"
-		SILENT_PRECOND=true
-		(blk_umount) || true
-		SILENT_PRECOND=false
+		# `(subshell) || true` would unrecoverably cancel errexit inside the subshell
+		SILENT_PRECOND=true sh "$0" blk_umount || true
 		"${type}_unexpose"
 		;;
 	esac
@@ -235,13 +237,13 @@ blk_compound() {
 if [ -n "$DEBUG" ]; then set -x; fi
 
 _rereadvars
+_state
 subcmd="$1"; test -n "$subcmd" && shift
 case "$subcmd" in
-init|mount|umount)	"blk_$subcmd" "$@";;
+blk_*)	"$subcmd" "$@";;
 *_setup|*_mount|*_umount)	blk_compound "$subcmd" "$@";;
 file_*)	"$subcmd" "$@";;
 status)
-	_state
 	case $S_CURRENT in
 	$S_UNKNOWN) echo "unknown status";;
 	$S_NODEV_FILE) echo "unavailable device, from image file";;
@@ -261,9 +263,9 @@ file_mount              Mount an image file holding LUKS encrypted data.
 file_umount             Unmount an image file holding LUKS encrypted data.
 
 Subcommands (block devices):
-init                    LUKS-format the device, and create a new filesystem inside it
-mount                   Open the crypt device and mount the filesystem
-umount                  Unmount the filesystem and close the crypt device
+blk_init                LUKS-format the device, and create a new filesystem inside it
+blk_mount               Open the crypt device and mount the filesystem
+blk_umount              Unmount the filesystem and close the crypt device
 
 Subcommands ("file" helpers):
 file_init <sz>          Create a file as a block device image, <sz> in MiB
