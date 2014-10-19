@@ -1,19 +1,4 @@
-scheme: 2tier
-
-== backup: archive
-
--- all
-# everything in these directories
-/srv/pub/doc
-/srv/pub/pls
-
--- meta_only
-# metadata for $path stored at $path.meta
-# <path> <sort key> <format; see find(1)>
-/srv/pub/music	1	%p
-/srv/pub/video	2	%s %p
-# default is 2	%s %p
-/srv/pub/misc
+scheme: 2tier-export
 
 == backup: current
 
@@ -55,3 +40,33 @@ scheme: 2tier
 # you can set this to / to clear all non-existent files, but this is
 # expensive and usually unnecessary, depending on your use case.
 /etc
+
+== backup: archive
+
+-- all
+# everything in these directories
+/srv/pub/doc
+/srv/pub/pls
+
+-- meta_only
+# metadata for $path stored at $path.meta
+# <path> <sort key> <format; see find(1)>
+/srv/pub/music	1	%p
+/srv/pub/video	2	%s %p
+# default is 2	%s %p
+/srv/pub/misc
+
+== backup: export
+
+-- all
+# data from "current"; trailing dot is to work around an rsnapshot bug
+/var/local/backup/current/.sync/.	+rsync_long_args=--no-relative
+# metadata from "archive"
+/srv/pub/music.meta
+/srv/pub/video.meta
+/srv/pub/misc.meta
+
+-- meta_only
+# metadata of "archive" data
+/srv/pub/doc
+/srv/pub/pls

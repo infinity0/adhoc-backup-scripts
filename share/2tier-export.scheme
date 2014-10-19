@@ -1,0 +1,52 @@
+2-tiered backup approach, with lighter export to remote hosts.
+
+== backup: current
+
+For small data that changes often, e.g. project work, config files
+
+-- PERIOD
+86400
+
+-- RETAIN
+daily	28
+weekly	6
+quarter	20
+
+-- CRONTAB
+daily	45  5  *  *  *
+weekly	44  5  *  *  0
+quarter	43  5  1 */3 *
+
+== backup: archive
+
+For large static data that doesn't change often, e.g. media
+
+-- PERIOD
+604800
+
+-- RETAIN
+weekly	4
+monthly	12
+yearly	5
+
+-- CRONTAB
+weekly	25  6  *  *  0
+monthly	24  6  1  *  *
+yearly	23  6  1  8  *
+
+== backup: export
+
+A lighter form of the backup, for export to remote hosts
+
+-- PERIOD
+86400
+
+-- RETAIN
+daily	7
+weekly	4
+monthly	3
+
+-- CRONTAB
+daily	15  6  *  *  *
+weekly	14  6  *  *  0
+monthly	13  6  1  *  0

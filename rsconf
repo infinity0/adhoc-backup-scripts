@@ -71,12 +71,15 @@ find_all() {
 }
 
 find_meta_only() {
-	while read -r src key format; do
+	OLDIFS="$IFS"
+	IFS="	"
+	while read -r src key format opts; do
 		key=${key:-2}
 		format=${format:-'%s %p'}
 		find "$src" -printf "$format"'\n' | sort -k"$key" > "$src.meta"
-		echo "$src.meta"
+		test -n "$opts" && echo "$src.meta	$opts" || echo "$src.meta"
 	done
+	IFS="$OLDIFS"
 }
 
 find_all_except_gitignore() {
@@ -121,11 +124,7 @@ make_backup_points() {
 	OLDIFS="$IFS"
 	IFS="	"
 	while read src opts; do
-		if [ -n "$opts" ]; then
-			echo "backup	$src	$1	$opts";
-		else
-			echo "backup	$src	$1";
-		fi
+		test -n "$opts" && echo "backup	$src	$1	$opts" || echo "backup	$src	$1";
 	done
 	IFS="$OLDIFS"
 }
