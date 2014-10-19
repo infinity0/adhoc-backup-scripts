@@ -1,5 +1,5 @@
 #!/bin/sh
-# High-level tools for managing a LUKS block device used for backup
+# High-level tools for managing a LUKS block device.
 #
 # see `help` for summary of subcommands and environment variables
 #
@@ -7,139 +7,184 @@
 
 BLK="${BLK:-block}"
 BLK_FS="${BLK_FS:-ext4}"
-LUKS_CIPHER="${LUKS_CIPHER:-aes-cbc-essiv:sha256}"
+LUKS_CIPHER="${LUKS_CIPHER:-aes-xts-plain64}"
 
-
-if [ -n "$DEBUG" ]; then set -x; fi
-set -o errexit
+set -e
 
 S_UNKNOWN=UNKNOWN
-S_NODEV_LOCAL=NODEV_LOCAL
+S_NODEV_FILE=NODEV_FILE
 S_CRYPT_PREINIT=CRYPT_PREINIT
 S_CRYPT_AVAIL=CRYPT_AVAIL
-S_CRYPT_STRIP=CRYPT_STRIP
 S_PLAIN_MOUNTED=PLAIN_MOUNTED
 
+S_CURRENT=
+
 _rereadvars() {
-	BLK_KEY="${BLK}.luks.key"
-	BLK_HEADER="${BLK}.luks.header"
-	BLK_CLOB="${BLK}.luks.clobber"
+	BLK_KEY="${BLK}.luks.0"
+	BLK_HEADER="${BLK}.luks"
+	BLK_MNT="${BLK}.mnt"
 	BLK_DEV="${BLK}"
-	BLK_CRYPT="${BLK}_crypt"  # crypt device name
-	DEV="$(readlink "$BLK_DEV" || true)"
-	DST="$(readlink "${BLK}.mnt" || true)"
+	BLK_CRYPT="$(basename "$BLK")_crypt"  # crypt device name
+	DEV="$(readlink -f "$BLK_DEV" || true)"
+	DST="$(readlink -f "$BLK_MNT" || true)"
 }
 
 _state() {
 	if [ -b "$BLK_DEV" ]; then
 		if mountpoint -q "$DST"; then
-			echo $S_PLAIN_MOUNTED
+			S_CURRENT=$S_PLAIN_MOUNTED
 			return
 		fi
 		if [ ! -r "$DEV" ]; then
 			echo >&2 "warning: no read permission on device $DEV"
-			echo $S_UNKNOWN
+			S_CURRENT=$S_UNKNOWN
 			return
 		fi
-		case $(head -c4 /dev/sdb1 | hexdump -e '/1 "%02X"') in
-		"00*")	echo $S_CRYPT_PREINIT;;
-		"4C554B53")	echo $S_CRYPT_AVAIL;;
-		*)
-			case $(file -s "$DEV") in
-			*data*)	echo $S_CRYPT_STRIP;;
-			*)	echo $S_UNKNOWN;;
-			esac
+		if [ ! -f "$BLK_HEADER" ]; then
+			S_CURRENT=$S_CRYPT_PREINIT
+			return
+		fi
+		case $(head -c4 "$BLK_HEADER" | hexdump -e '/1 "%02X"') in
+		"4C554B53")	S_CURRENT=$S_CRYPT_AVAIL;;
+		*)	S_CURRENT=$S_CRYPT_PREINIT;;
 		esac
 	else
 		if [ -f "$BLK.img" ]; then
-			echo $S_NODEV_LOCAL
+			S_CURRENT=$S_NODEV_FILE
 		else
-			echo $S_UNKNOWN
+			S_CURRENT=$S_UNKNOWN
 		fi
 	fi
 }
 
 _state_in() {
-	local current="$(_state)"
-	for i in "$@"; do test "$i" = "$current" && return 0; done
+	_state
+	for i in "$@"; do test "$i" = "$S_CURRENT" && return 0; done
 	return 1
 }
 
-_precond() { _state_in "$@" || { echo >&2 "precondition not fufilled: current state not one of $@"; exit 1; }; }
+SILENT_PRECOND=false
+_precond() { _state_in "$@" || { $SILENT_PRECOND || echo >&2 "precondition not fufilled: current state not one of $@"; exit 1; }; }
 # sleep 0.2 since udev can take a while to apply settings
-_postcond() { sleep 0.2; _state_in "$@" || { echo >&2 "postcondition not fufilled: current state not one of $@"; exit 100; }; }
+_postcond() { sleep 0.2; _state_in "$@" || { echo >&2 "postcondition not fufilled (bug?): current state not one of $@"; exit 127; }; }
+
+log() { echo >&2 "$@"; }
+
+# lots of shell fuckery to approximate a try-finally block
+_TRY_STACK=0
+_TRY_EXIT_CODE=0 # it should be ok for child blocks to clobber this since non-0 means we want to propagate this value to the parent anyway
+try() {
+	_TRY_EXIT_CODE=0
+	_TRY_STACK=$((_TRY_STACK+1));
+	set +e;
+}
+not_catch() {
+	_TRY_EXIT_CODE=$?
+	return $_TRY_EXIT_CODE
+}
+finally() {
+	local x=$?
+	test "$_TRY_EXIT_CODE" = 0 && _TRY_EXIT_CODE=$x
+	_TRY_STACK=$((_TRY_STACK-1));
+	if [ "$_TRY_STACK" = 0 ]; then set -e; fi
+}
+endf() { # use as eval $(endf)
+	test "$_TRY_EXIT_CODE" = 0 || echo 'return $_TRY_EXIT_CODE'
+}
 
 ################################################################################
 ## file helper functions
 ################################################################################
 
-file_expose() {
-	_precond $S_NODEV_LOCAL
-	local DEV="$(sudo losetup --show -f "$BLK.img" || exit 1)"
-	ln -sf "$DEV" "$BLK_DEV"
-	_postcond $S_CRYPT_PREINIT $S_CRYPT_AVAIL $S_CRYPT_STRIP
-}
-
-file_unexpose() {
-	_precond $S_CRYPT_PREINIT $S_CRYPT_AVAIL $S_CRYPT_STRIP
-	sudo losetup -d "$DEV"
-	rm -f "$BLK_DEV"
-	_postcond $S_NODEV_LOCAL
-}
-
 file_init() {
 	_precond $S_UNKNOWN
 	local MB="$1"
+	expr "$MB" + 0 >/dev/null
+	test ! -f "$BLK.img"
 	dd if=/dev/zero of="$BLK.img" seek="$MB" bs=1048576 count=0
-	_postcond $S_NODEV_LOCAL
+	_postcond $S_NODEV_FILE
+}
+
+file_expose() {
+	_precond $S_NODEV_FILE
+	local DEV="$(sudo losetup --show -f "$BLK.img" || exit 1)"
+	ln -sf "$DEV" "$BLK_DEV"
+	_rereadvars
+	_postcond $S_CRYPT_PREINIT $S_CRYPT_AVAIL
+}
+
+file_unexpose() {
+	_precond $S_CRYPT_PREINIT $S_CRYPT_AVAIL
+	if sudo losetup -j "$BLK.img" | grep -q "$(readlink -f "$BLK_DEV")"; then
+		sudo losetup -d "$DEV"
+	fi
+	rm -f "$BLK_DEV"
+	_postcond $S_NODEV_FILE
 }
 
 file_expand2fs() {
-	_precond $S_CRYPT_AVAIL
-	# needs to be run on actual image file
+	_precond $S_NODEV_FILE
 	local MB="$1"
+	expr "$MB" + 0 >/dev/null
 	local osz="$(stat -L -c %s "$BLK.img")"
-	test "$(expr "$MB" \* 1048576)" -gt "$osz" || { echo >&2 "won't shrink due to higher risk of data loss; do this yourself manually"; exit 1; }
-	file_unexpose || true
-	dd if=/dev/zero count=0 of="$BLK.img" seek="$MB" bs=1048576
-	local hsz="$(stat -c %s "$BLK_HEADER")"
-	local fsz="$(expr \( "$MB" \* 1048576 - "$hsz" \) \/ 1024 )"
+	test "$(expr "$MB" \* 1048576)" -gt "$osz" || { log "won't shrink due to higher risk of data loss; do this yourself manually"; exit 1; }
+
+	# needs to be run on actual image file
+	dd if=/dev/zero of="$BLK.img" seek="$MB" bs=1048576 count=0
 	file_expose
-	_rereadvars
-	sudo cryptsetup luksOpen -d "$BLK_KEY" "$DEV" "$BLK_CRYPT"
-	resize2fs "/dev/mapper/$BLK_CRYPT" "$fsz"
-	sudo cryptsetup luksClose "$BLK_CRYPT"
-	_postcond $S_CRYPT_AVAIL
+	try
+		sudo cryptsetup luksOpen --header "$BLK_HEADER" -d "$BLK_KEY" "$DEV" "$BLK_CRYPT"
+		not_catch && __file_expand2fs_next() {
+		try
+			/sbin/e2fsck -f "/dev/mapper/$BLK_CRYPT"
+			not_catch && /sbin/resize2fs "/dev/mapper/$BLK_CRYPT" "${MB}M"
+		finally
+			sudo cryptsetup luksClose "$BLK_CRYPT"
+		eval $(endf)
+		} && __file_expand2fs_next
+	finally
+		file_unexpose
+	eval $(endf)
+
+	_postcond $S_NODEV_FILE
 }
 
 ################################################################################
-## main luksblk functions
+## block device functions
 ################################################################################
 
 blk_init() {
 	_precond $S_CRYPT_PREINIT
-	test -f "$BLK_KEY" || { echo >&2 "key file not found: $BLK_KEY"; exit 1; }
+	test -f "$BLK_KEY" || {
+		log "generating random key in $BLK_KEY"
+		head -c32 /dev/random | base64 > "$BLK_KEY"
+	}
 	rm -f "$BLK_HEADER"
-	local key_size=256
-	if echo "$LUKS_CIPHER" | grep -q xts; then key_size=512; fi
-	echo | sudo cryptsetup luksFormat -c "$LUKS_CIPHER" -s "$key_size" -h sha256 "$DEV" "$BLK_KEY"
-	sudo cryptsetup luksHeaderBackup -d "$BLK_KEY" --header-backup-file "$BLK_HEADER" "$DEV"
-	sudo cryptsetup luksOpen -d "$BLK_KEY" "$DEV" "$BLK_CRYPT"
-	"mkfs.$BLK_FS" "/dev/mapper/$BLK_CRYPT"
-	sudo cryptsetup luksClose "$BLK_CRYPT"
-	_postcond $S_CRYPT_AVAIL
-}
 
-blk_header() {
-	_precond $S_CRYPT_AVAIL
-	rm -f "$BLK_HEADER"
-	sudo cryptsetup luksHeaderBackup -d "$BLK_KEY" --header-backup-file "$BLK_HEADER" "$DEV"
+	log "create $BLK_HEADER"
+	dd if=/dev/zero of="$BLK_HEADER" seek="2" bs=1048576 count=0 status=none
+
+	log "create $BLK with key $BLK_KEY and filesystem $BLK_FS"
+	expr "$LUKS_CIPHER" : '.*xts.*' >/dev/null && key_size=512 || key_size=256
+	sudo cryptsetup luksFormat --header "$BLK_HEADER" -q -c "$LUKS_CIPHER" -s "$key_size" -h sha256 "$DEV" "$BLK_KEY"
+	sudo cryptsetup luksOpen --header "$BLK_HEADER" -d "$BLK_KEY" "$DEV" "$BLK_CRYPT"
+	try
+		"/sbin/mkfs.$BLK_FS" "/dev/mapper/$BLK_CRYPT"
+	finally
+		sudo cryptsetup luksClose "$BLK_CRYPT"
+	eval $(endf)
+
 	_postcond $S_CRYPT_AVAIL
 }
 
 blk_mount() {
 	_precond $S_CRYPT_AVAIL
-	sudo cryptsetup luksOpen -d "$BLK_KEY" "$DEV" "$BLK_CRYPT"
+	test -d "$BLK_MNT" || {
+		log "creating mount point: $BLK_MNT"
+		log "if you want to use a different mount point, please unmount your cryptdisk, then symlink $BLK_MNT to the desired location."
+		mkdir -p "$BLK_MNT"
+	}
+	sudo cryptsetup luksOpen --header "$BLK_HEADER" -d "$BLK_KEY" "$DEV" "$BLK_CRYPT"
 	sudo mount "/dev/mapper/$BLK_CRYPT" "$DST"
 	_postcond $S_PLAIN_MOUNTED
 }
@@ -151,69 +196,95 @@ blk_umount() {
 	_postcond $S_CRYPT_AVAIL
 }
 
-blk_strip() {
-	_precond $S_CRYPT_AVAIL
-	local sz="$(stat -c %s "$BLK_HEADER")"
-	test -f "$BLK_CLOB" || dd if=/dev/urandom of="$BLK_CLOB" bs=1 count="$sz"
-	sudo dd if="$BLK_CLOB" of="$BLK_DEV" bs=1 count="$sz" conv=notrunc
-	_postcond $S_CRYPT_STRIP
+blk_compound() {
+	local subcmd="$1"
+	shift
+	case "$subcmd" in
+	*_setup)
+		local type="${subcmd%_setup}"
+		_state
+		"${type}_init" "$@"
+		"${type}_expose"
+		try
+			blk_init
+		finally
+			"${type}_unexpose"
+		eval $(endf)
+		;;
+	*_mount)
+		local type="${subcmd%_mount}"
+		SILENT_PRECOND=true
+		("${type}_expose") || true
+		SILENT_PRECOND=false
+		blk_mount
+		;;
+	*_umount)
+		local type="${subcmd%_umount}"
+		SILENT_PRECOND=true
+		(blk_umount) || true
+		SILENT_PRECOND=false
+		"${type}_unexpose"
+		;;
+	esac
 }
 
-blk_unstrip() {
-	_precond $S_CRYPT_STRIP
-	# must be mounted
-	local sz="$(stat -c %s "$BLK_HEADER")"
-	sudo dd if="$BLK_HEADER" of="$BLK_DEV" bs=1 count="$sz" conv=notrunc
-	_postcond $S_CRYPT_AVAIL
-}
+################################################################################
+## main
+################################################################################
+
+if [ -n "$DEBUG" ]; then set -x; fi
 
 _rereadvars
 subcmd="$1"; test -n "$subcmd" && shift
 case "$subcmd" in
+init|mount|umount)	"blk_$subcmd" "$@";;
+*_setup|*_mount|*_umount)	blk_compound "$subcmd" "$@";;
 file_*)	"$subcmd" "$@";;
-init|header|mount|umount|strip|unstrip)	"blk_$subcmd" "$@";;
 status)
-	case $(_state) in
+	_state
+	case $S_CURRENT in
 	$S_UNKNOWN) echo "unknown status";;
-	$S_NODEV_LOCAL) echo "unavailable device, from image file";;
+	$S_NODEV_FILE) echo "unavailable device, from image file";;
 	$S_CRYPT_PREINIT) echo "uninitialised device";;
 	$S_CRYPT_AVAIL) echo "crypt device, unmounted";;
-	$S_CRYPT_STRIP) echo "stripped crypt device";;
 	$S_PLAIN_MOUNTED) echo "crypt device, mounted";;
 	esac
 	;;
 *)	cat <<'EOF'
 Usage: [<VAR>=<val>] $0 <SUBCMD> [<ARGS>]
 
+High-level tools for managing a LUKS block device, with detached headers.
+
 Subcommands:
-init            LUKS-format the device, and create a new filesystem inside it
-header          Re-backup the LUKS header
-mount           Open the crypt device and mount the filesystem
-umount          Unmount the filesystem and close the crypt device
-strip           Clobber the LUKS header with random data, with backup
-unstrip         Restore the LUKS header from the backup
+file_setup <sz>         Create an image file to hold LUKS encrypted data.
+file_mount              Mount an image file holding LUKS encrypted data.
+file_umount             Unmount an image file holding LUKS encrypted data.
+
+Subcommands (block devices):
+init                    LUKS-format the device, and create a new filesystem inside it
+mount                   Open the crypt device and mount the filesystem
+umount                  Unmount the filesystem and close the crypt device
 
 Subcommands ("file" helpers):
-file_init <sz>  Create a file as a block device image, <sz> in MiB
-file_expose     Expose the file as a loopback block device
-file_unexpose   Unexpose the loopback device
-file_expand2fs  Expand the file image and the encrypted ext2+ fs within it
+file_init <sz>          Create a file as a block device image, <sz> in MiB
+file_expose             Expose the file as a loopback block device
+file_unexpose           Unexpose the loopback device
+file_expand2fs <sz>     Expand the file image and the encrypted ext2+ fs within it
 
 Subcommands ("LVM" helpers):
-lvm_init <sz>   [TODO] Create an LV as a block device, <sz> in MiB
-lvm_expand2fs   [TODO] Expand an LV and the encrypted ext2+ fs within it
+lvm_init <sz>           [TODO] Create an LV as a block device, <sz> in MiB
+lvm_expand2fs           [TODO] Expand an LV and the encrypted ext2+ fs within it
 
 Environment variables:
-BLK             Path to symlink to your block device, default 'block'
-BLK_FS          (setup only) set the filesystem type, default ext4
-LUKS_CIPHER     (setup only) set the cipher spec, default aes-cbc-essiv:sha256
+BLK                     Path to symlink to your block device, default 'block'
+BLK_FS                  (setup only) set the filesystem type, default ext4
+LUKS_CIPHER             (setup only) set the cipher spec, default aes-xts-plain64
 
 Files:
-${block}                symlink to block device (from BLK)
-${block}.luks.key       LUKS key for slot 0
-${block}.luks.header    LUKS header
-${block}.luks.clobber   random data to clobber LUKS header with
-${block}.mnt            symlink to mount destination
+${block}                symlink to block device ($BLK)
+${block}.luks.0         LUKS key for slot 0
+${block}.luks           LUKS header
+${block}.mnt            mount destination (or symlink to it)
 ${block}.img            device image file (or symlink to it)
 EOF
 	;;
