@@ -2,8 +2,6 @@
 # High-level tools for managing a LUKS block device.
 #
 # see `help` for summary of subcommands and environment variables
-#
-# TODO(infinity0): add functionality of prep-crypto
 
 BLK="${BLK:-block}"
 BLK_FS="${BLK_FS:-ext4}"
@@ -101,7 +99,8 @@ file_init() {
 	local MB="$1"
 	expr "$MB" + 0 >/dev/null
 	test ! -f "$BLK.img"
-	dd if=/dev/zero of="$BLK.img" seek="$MB" bs=1048576 count=0
+	log "create $BLK.img empty image file"
+	dd if=/dev/zero of="$BLK.img" seek="$MB" bs=1048576 count=0 status=none
 	_postcond $S_NODEV_FILE
 }
 
@@ -129,11 +128,17 @@ file_expand2fs() {
 	local MB="$1"
 	expr "$MB" + 0 >/dev/null
 	local osz="$(stat -L -c %s "$BLK.img")"
-	test "$(expr "$MB" \* 1048576)" -gt "$osz" || { log "won't shrink due to higher risk of data loss; do this yourself manually"; exit 1; }
+	test "$(expr "$MB" \* 1048576)" -ge "$osz" || { log "won't shrink due to higher risk of data loss; do this yourself manually"; exit 1; }
+	local omb=$(((osz-1)/1048576+1))
 
 	# needs to be run on actual image file
-	dd if=/dev/zero of="$BLK.img" seek="$MB" bs=1048576 count=0
+	log "expanding $BLK.img"
+	dd if=/dev/zero of="$BLK.img" seek="$MB" bs=1048576 count=0 status=none
 	file_expose
+	_state
+	log "filling $BLK with random data"
+	blk_random "$omb"
+
 	try
 		sudo cryptsetup luksOpen --header "$BLK_HEADER" -d "$BLK_KEY" "$DEV" "$BLK_CRYPT"
 		not_catch && __file_expand2fs_next() {
@@ -155,16 +160,24 @@ file_expand2fs() {
 ## block device functions
 ################################################################################
 
+BADBLOCKS=true
 blk_init() {
 	_precond $S_CRYPT_PREINIT
 	test -f "$BLK_KEY" || {
-		log "generating random key in $BLK_KEY"
+		log "create $BLK_KEY containing random key"
 		head -c32 /dev/random | base64 > "$BLK_KEY"
 	}
 	rm -f "$BLK_HEADER"
 
-	log "create $BLK_HEADER"
-	dd if=/dev/zero of="$BLK_HEADER" seek="2" bs=1048576 count=0 status=none
+	log "create $BLK_HEADER with random data"
+	dd if=/dev/urandom of="$BLK_HEADER" bs=1048576 count=2 status=none
+
+	if $BADBLOCKS; then
+		log "running badblocks (set BADBLOCKS=false to skip, e.g. for non-physical device)"
+		badblocks -svw -b 1048576 "$DEV"
+	fi
+	log "filling $BLK with random data"
+	blk_random 0
 
 	log "create $BLK with key $BLK_KEY and filesystem $BLK_FS"
 	expr "$LUKS_CIPHER" : '.*xts.*' >/dev/null && key_size=512 || key_size=256
@@ -177,6 +190,19 @@ blk_init() {
 	eval $(endf)
 
 	_postcond $S_CRYPT_AVAIL
+}
+
+blk_random() {
+	dd if=/dev/urandom of="$BLK" bs=1048576 seek="$1" & pid_dd=$!
+	# TODO: support resume: grep for 00000000 before/after? "$1" and start there
+	pgrep -a dd >/dev/null
+	trap "kill $pid_dd; exit 127" INT TERM
+	while kill -USR1 $pid_dd 2>/dev/null; do
+		for i in $(seq 1 16); do
+			sleep 1
+			kill -0 $pid_dd 2>/dev/null || break 2
+		done
+	done
 }
 
 blk_mount() {
@@ -210,7 +236,7 @@ blk_compound() {
 		"${type}_init" "$@"
 		"${type}_expose"
 		try
-			blk_init
+			BADBLOCKS=false blk_init
 		finally
 			"${type}_unexpose"
 		eval $(endf)
