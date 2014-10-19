@@ -48,6 +48,7 @@ user_select() {
 	local argsY=()
 	local argsN=()
 	local namesf=$(mktemp --tmpdir=/dev/shm apt-clean.XXXXXXXXXX)
+	trap "rm $namesf" EXIT INT TERM
 	while read name desc; do
 		if read_state "$tag" | grep -qxF "$name"; then
 			argsY+=( "$name" "$desc" "on" )
