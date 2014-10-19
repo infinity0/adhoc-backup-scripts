@@ -7,7 +7,14 @@
 SCRIPT_HOME="$(dirname "$(readlink -f "$0")")"
 DATADIR="$SCRIPT_HOME/share"
 
+set -e
 abort() { local x="$1"; shift; echo >&2 "rsconf: $@"; exit $x; }
+
+TMPDIR="/tmp"
+TMP_PREFIX="default"
+set_tmp_prefix() {
+	TMP_PREFIX="$(echo "$1" | sha256sum | cut -b1-8)-$2"
+}
 
 COMMENT_PREFIX='#'
 significant_lines() {
@@ -87,7 +94,7 @@ find_all_except_gitignore() {
 		args=( $keep )
 		args=(${args[@]/#/-x\!\'})
 		args=(${args[@]/%/\'})
-		tmp=$(mktemp --tmpdir rsconf-XXXXXXXX)
+		tmp="$(mktemp --tmpdir="$TMPDIR" "rsconf-${TMP_PREFIX}-XXXXXXXX")"
 		# only exclude .gitignore entries
 		# keep locally-ignored stuff as that's probably important
 		# also keep stuff matching gitignore patterns in backup.list (negated-ignore in this case, since they are kept)
@@ -168,7 +175,7 @@ generate_conf() {
 
 	## Backup points
 
-	include_conf	\`$0 backup_list_points "$backup_root/backup.list" "$backup"\`
+	include_conf	\`$0 generate_backup_points "$backup_root" "$backup"\`
 	EOF
 }
 
@@ -178,19 +185,18 @@ generate_crontab() {
 	cat <<-EOF
 	# See \`man rsnapshot\` for details
 	# The "rsnapshot sync" section is especially useful for these entries
-	RS=$(which rsnapshot)
+	RSC=$(which "$0")
+	RSC_ROOT=$backup_root
 
 	EOF
 	list_backups "$scheme" | while read backup; do
-		echo "RS_ROOT=$backup_root/$backup"
-		echo "RS_CONF=$backup_root/$backup.conf"
 		local first=true
 		get_backup_part "$scheme" "$backup" CRONTAB | significant_lines | while read level cron; do
 			if $first; then
-				echo "$cron"'	$RS -c $RS_CONF sync && /bin/touch $RS_ROOT/lastsync && $RS -c $RS_CONF '"$level"
+				echo "$cron"'	$RSC run $RSC_ROOT '"$backup sync"' && $RSC run $RSC_ROOT '"$backup $level"
 				first=false
 			else
-				echo "$cron"'	$RS -c $RS_CONF '"$level"
+				echo "$cron"'	$RSC run $RSC_ROOT '"$backup $level"
 			fi
 		done
 		echo
@@ -200,6 +206,8 @@ generate_crontab() {
 install_conf() {
 	local backup_root="$(get_backup_root "${1-.}")"
 	local scheme="$(get_scheme_path_for_root "$backup_root")"
+
+	# generate configs
 	list_backups "$scheme" | while read backup; do
 		mkdir -p "$backup_root/$backup"
 		echo_file_start "$backup_root/$backup.conf"
@@ -211,6 +219,14 @@ install_conf() {
 		rsnapshot -c "$backup_root/$backup.conf" -q -t sync || exit $?
 	done || exit $?
 	echo "all configs passed!"
+
+	# clean temp files
+	list_backups "$scheme" | while read backup; do
+		set_tmp_prefix "$backup_root" "$backup"
+		rm -f "$TMPDIR/rsconf-$TMP_PREFIX"-*
+	done
+
+	# generate crontab
 	echo_file_start "$backup_root/rsnapshot.crontab"
 	generate_crontab "$backup_root" "$scheme" | tee "$backup_root/rsnapshot.crontab"
 	echo_file_end
@@ -240,6 +256,30 @@ check_status() {
 	echo "OK - all backups up-to-date: $backup_root"
 }
 
+generate_backup_points() {
+	local backup_root="$(get_backup_root "${1-.}")"
+	local backup="$2"
+	local backup_list="$backup_root/backup.list"
+	set_tmp_prefix "$backup_root" "$backup"
+	list_backup_parts "$backup_list" "$backup" | grep -v '^_' | while read section; do
+		get_backup_part "$backup_list" "$backup" "$section" | significant_lines \
+		  | "find_$section" | make_backup_points "./"
+	done
+}
+
+run() {
+	local backup_root="$(get_backup_root "${1-.}")"
+	local backup="$2"
+	local backup_list="$backup_root/backup.list"
+	local level="$3"
+	set_tmp_prefix "$backup_root" "$backup"
+	rm -f "$TMPDIR/rsconf-$TMP_PREFIX"-* # rm temp files from last time
+	. <(get_backup_part "$backup_list" "$backup" _presync)
+	rsnapshot -c "$backup_root/$backup.conf" "$level"
+	test "$level" = "sync" && touch "$backup_root/$backup/lastsync"
+	. <(get_backup_part "$backup_list" "$backup" _postsync)
+}
+
 subcmd="$1"
 shift
 
@@ -251,15 +291,9 @@ scheme_* )
 	get_backup_part "$(get_scheme_path "$1")" "$2" "$(echo "${subcmd#scheme_}" | tr a-z A-Z)"
 	;;
 backup_list_types )
-	list_backup_parts "$1" "$2"
+	list_backup_parts "$(get_backup_root "${1-.}")/backup.list" "$2" "$3"
 	;;
-backup_list_points )
-	list_backup_parts "$1" "$2" | while read section; do
-		get_backup_part "$1" "$2" "$section" | significant_lines \
-		  | "find_$section" | make_backup_points "./"
-	done
-	;;
-generate_conf | generate_crontab | install_conf | check_status )
+generate_conf | generate_crontab | install_conf | generate_backup_points | run | check_status )
 	"$subcmd" "$@"
 	;;
 test_find_method )

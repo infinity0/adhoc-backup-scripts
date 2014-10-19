@@ -58,6 +58,14 @@ scheme: 2tier-export
 
 == backup: export
 
+-- _presync
+# shell commands before running the backup
+cd /home/backup && BLK=export luksblk file_mount
+
+-- _postsync
+# shell commands after running the backup
+cd /home/backup && BLK=export luksblk file_umount
+
 -- all
 # data from "current"; trailing dot is to work around an rsnapshot bug
 /var/local/backup/current/.sync/.	+rsync_long_args=--no-relative
