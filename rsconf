@@ -2,6 +2,7 @@
 # Configure rsnapshot in a more advanced and concise way.
 #
 # See examples/backup.list for an example config.
+# TODO: make sure backup.list is writeable only by the current user
 
 # development directories, override on install
 SCRIPT_HOME="$(dirname "$(readlink -f "$0")")"
@@ -259,7 +260,7 @@ check_status() {
 	local backup_root="$(get_backup_root "${1-.}")"
 	local scheme="$(get_scheme_path_for_root "$backup_root")"
 	list_backups "$scheme" | while read backup; do
-		local syncfile="$backup_root/$backup/lastsync"
+		local syncfile="$backup_root/$backup.sync"
 		test -f "$syncfile" || { echo "CRITICAL - never synced: $backup_root/$backup"; exit "$STATE_CRITICAL"; }
 		local p_grace="$(expr "$(get_backup_part "$scheme" "$backup" PERIOD)" \* 3 / 2)"
 		local p_actual="$(expr "$(date +%s)" - "$(stat -c %Y "$syncfile")")"
@@ -291,7 +292,7 @@ run() {
 	rm -f "$TMPDIR/rsconf-$TMP_PREFIX"-* # rm temp files from last time
 	. <(get_backup_part "$backup_list" "$backup" _presync)
 	rsnapshot -c "$backup_root/$backup.conf" "$level"
-	test "$level" = "sync" && touch "$backup_root/$backup/lastsync"
+	test "$level" = "sync" && touch "$backup_root/$backup.sync"
 	. <(get_backup_part "$backup_list" "$backup" _postsync)
 }
 
