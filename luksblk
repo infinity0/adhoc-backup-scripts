@@ -105,6 +105,10 @@ file_init() {
 }
 
 file_expose() {
+	if [ "$(sudo losetup -j "$BLK.img")" != "$(readlink "$BLK_DEV")" ]; then
+		rm -f "$BLK_DEV"
+		_state
+	fi
 	_postcond $S_CRYPT_PREINIT $S_CRYPT_AVAIL 2>/dev/null && return
 	_precond $S_NODEV_FILE
 	local DEV="$(sudo losetup --show -f "$BLK.img" || exit 1)"
