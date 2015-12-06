@@ -2,6 +2,7 @@ Contents
 
 - [apt-clean](#apt-clean): clean and simplify APT package state
 - [bmount](#bmount): mirror subtrees of a filesystem
+- [extsync](#extsync): sync subtrees between remote hosts
 - [git-etc](#git-etc): track/restore system files and metadata
 - [rsconf](#rsconf): simple backup framework for rsnapshot
 - [luksblk](#luksblk): manage simple LUKS block devices
@@ -154,6 +155,38 @@ bmount; (-) means a disadvantage.
 
 [etckeeper]: http://joeyh.name/code/etckeeper/
 [live-persist]: http://live-systems.org/manpages/stable/en/html/persistence.conf.5.html
+
+----
+
+# extsync
+
+Synchronise subtrees between remote hosts using rsync.
+
+Example use-cases:
+
+- you've got your own personal way of organising many packages and projects in
+  a nice tidy filesystem tree under your home directory. you have multiple
+  devices, and you'd like to maintain the identical nice tidy structure across
+  all of them. however, you don't want to copy the *entire* tree to every
+  device, but only the projects that you're working on at the current time.
+
+## Pre-use
+
+Depends: rsync
+
+## Use
+
+TODO
+
+## Related
+
+After I wrote extsync, I found out about [unison][] which works with the same
+idea of a "base tree" and allows the user to select subtrees of that to sync.
+The major difference is that it does a *lot* of prompting; sometimes you just
+want the tool to shut up and work. You can use this tool and unison on the same
+data though, depending on what you prefer at the time.
+
+[unison]: https://www.cis.upenn.edu/~bcpierce/unison/
 
 ----
 
