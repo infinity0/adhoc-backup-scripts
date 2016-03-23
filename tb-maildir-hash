@@ -1,0 +1,238 @@
+#!/bin/sh
+# Convert Thunderbird maildirs to use hash-based filenames and update the .msf
+# index to point to these new filenames. Hard-link these into a central message
+# repo under <storedir>, reusing any existing files/links.
+#
+# There are two invocation forms, see -? for details. The -s form scans for
+# maildirs under <serverdir> and runs the convertion for all of them; here the
+# remaining arguments are expressions to find(1) to further tweak the scan.
+#
+# Examples:
+#   $ "$0" ../mailstore ./INBOX ./Archive
+#   $ "$0" -s mail.riseup.net{,.store} -not -path '*/INBOX.sbd/*'
+set -e
+
+abort() { local x="${1:-1}"; shift; echo >&2 "$0 abort: $@"; exit "$x"; }
+log() { if [ "$1" -le "$verbose" ]; then shift; echo >&2 "$@"; fi; }
+
+USAGE="\
+Usage: $0 [<opts>] <storedir> <maildir> [<maildir> ...]
+       $0 [<opts>] -v -s <serverdir> <storedir> [<findexpr> ...]"
+deletedangling=false
+postreport=false
+verbose=0
+serverdir=
+while getopts 'fvrs:h?' o; do
+	case $o in
+	f )	deletedangling=true;;
+	v ) verbose="$((verbose + 1))";;
+	r ) postreport=true;;
+	s ) serverdir="$OPTARG";;
+	h|\? ) echo "$USAGE"; exit 2;;
+	esac
+done
+shift $(expr $OPTIND - 1)
+test -n "$serverdir" && test -n "$1" || test -n "$2" || { echo "$USAGE"; exit 2; }
+
+sp='[[:space:]]*'
+nsp='[^[:space:]]*'
+g6='\).*'
+# these complex expressions are to handle newlines within tokens
+ghettoMSFReplace() {
+	local k="$1" v="$2" rep="$3"
+	tr '(' '\0' | sed -zre "s/^($sp)($k)($sp)($v)($sp)($g6)/$rep/g" | tr '\0' '('
+}
+ghettoMSFFind() {
+	local k="$1" v="$2" rep="$3"
+	tr '(' '\0' | sed -nzre "s/^($sp)($k)($sp)($v)($sp)($g6)/$rep/gp" | tr '\0' '\n'
+}
+
+linesToOrRE() {
+	local re="$(tr '\n' '|')"
+	echo "${re%|}"
+}
+
+msfAliasForValue() {
+	local msf="$1"
+	# get all aliases with a given value
+	ghettoMSFFind "$nsp" "=$2" "\2" <"$msf"
+}
+
+msfGetStoreAliases() {
+	# get aliases of a value, restricted to aliases which are in a "storeToken" cell
+	local msf="$1" storeTokenAlias="$2" value="$3"
+	local aliases="$(msfAliasForValue "$msf" "$value" | linesToOrRE)"
+	aliases="${aliases%|}"
+	ghettoMSFFind "\^$storeTokenAlias" "\^($aliases)" "\4" <"$msf"
+}
+
+msfReplaceAliasValue() {
+	# replace all values of a given alias with another value
+	local msf="$1" k="$2" fr="$3" to="$4"
+	ghettoMSFReplace "$k" "=$fr" "\1\2\3=$to\5\6" <"$msf" >"$msf.tmp"
+	mv "$msf.tmp" "$msf"
+}
+
+calcHash() {
+	sha256sum | cut "-d " -f1 | python3 -c "import binascii as b, sys;
+hashhex = sys.stdin.read().rstrip()
+hashb64 = b.b2a_base64(b.a2b_hex(hashhex)).decode('utf-8').translate({
+  ord('/'):'_',
+  ord('+'):'-',
+  ord('='):None
+})
+sys.stdout.write(hashb64);"
+}
+
+calcHashPath() {
+	echo "$(expr substr "x$1" 2 2)"
+}
+
+storeMail() {
+	local storedir="$1" maildir="$2" storeTokAlias="$3" from="$4" to="$5" topath="$6"
+	local target="$topath/$to"
+	local toks="$(msfGetStoreAliases "$maildir.msf" "$storeTokAlias" "$from" | linesToOrRE)"
+	test -z "$toks" && return 1
+	if [ ! -e "$storedir/$target" ]; then
+		mkdir -p "$storedir/$topath"
+		ln "$maildir/cur/$from" "$storedir/$target"
+	else
+		log 1 "$maildir: message $to already in store; will link to that"
+	fi
+	if [ "$to" = "$from" ]; then
+		return 0 # already done
+	elif [ -f "$maildir/cur/$to" ]; then
+		log 1 "$maildir: message $to already exists in maildir, will just remove $from"
+	else
+		ln "$storedir/$target" "$maildir/cur/$to"
+	fi
+	msfReplaceAliasValue "$maildir.msf" "$toks" "$from" "$to"
+	rm "$maildir/cur/$from"
+}
+
+storeMaildir() {
+	local storedir="$1" maildir="$2"
+	for i in "$maildir/cur"/*; do
+		local f="$(basename "$i")"
+		test "$(stat -c%h "$i" 2>/dev/null)" = 1 || \
+		{ log 2 "$maildir: skip because already linked: $f"; continue; }
+		local date="$(head -n1 "$i")"
+		local hash="$(tail -n+2 "$i" | sed -e '0,/^$/{/^X-Mozilla-Status/d}' | calcHash)"
+		local hashpath="$(calcHashPath "$hash")"
+		local storeTokAlias="$(msfAliasForValue "$maildir.msf" storeToken)"
+		test "x$f" = "x$hash" && test -f "$storedir/$hashpath/$hash" && \
+		{ log 2 "$maildir: skip because already hashed: $f"; continue; }
+		echo "$f $date => $hashpath $hash"
+		if ! storeMail "$storedir" "$maildir" "$storeTokAlias" "$f" "$hash" "$hashpath"; then
+			if $deletedangling; then
+				rm "$maildir/cur/$f"
+			else
+				log 1 "$maildir: couldn't find $f; perhaps dangling message, pass -f to delete"
+			fi
+		fi
+	done
+}
+
+getProfileDir() {
+	local curdir="$(dirname "$(readlink -m "$1")")"
+	while [ "$curdir" != "/" -a ! -e "$curdir/prefs.js" ]; do
+		curdir="$(dirname "$curdir")"
+	done
+	if [ -e "$curdir/prefs.js" ]; then
+		echo "$curdir"
+	fi
+}
+
+# MUST be executed in a subshell, i.e. inside ()
+execLockProfileDir() {
+	local action="sys.stdin.read()"
+	case "$2" in check ) action="sys.exit(0)";; forever ) action="import time
+	while True: time.sleep(3600)";; esac
+	exec python3 <<EOF
+import fcntl, sys
+with open("$1/.parentlock", "w") as fp:
+	fcntl.lockf(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+	$action
+EOF
+}
+
+lockpid=
+checkStoreDir() {
+	local storedir="$1"
+	local storeprofdir="$(getProfileDir "$storedir")"
+	test -d "$storedir" || abort 1 "not a directory: $storedir"
+	test -n "$storeprofdir" || abort 1 "not a Thunderbird profile: $storedir"
+	# this is very hacky and the double-lock is not fully-correct, but the best that
+	# can feasibly be accomplished in a shell script and still be reasonably comprehensible
+	( execLockProfileDir "$storeprofdir" check ) || abort 1 "Thunderbird in use on: $storeprofdir"
+	( execLockProfileDir "$storeprofdir" forever ) &
+	lockpid="$!"
+	# "trap - EXIT" prevents double-clean, see
+	# https://stackoverflow.com/questions/8122779/is-it-necessary-to-specify-traps-other-than-exit
+	trap "kill -TERM $lockpid; trap - EXIT" EXIT HUP INT QUIT PIPE ALRM TERM
+}
+
+storeMaildirs() {
+	local storedir="$1"
+	local storeprofdir="$(getProfileDir "$storedir")"
+	# x is the exit code of the last storeMaildir subshell
+	# r is the exit code of the last such subshell that failed
+	local r=0 x=0
+	while read maildir; do x=0; (
+		local maildir="${maildir%.msf}"
+		test -d "$maildir" || abort 2 "$maildir:" "not a directory"
+		test -d "$maildir/tmp" || abort 1 "$maildir:" "not a maildir"
+		test -z "$(ls -1 "$maildir/tmp")" || abort 1 "$maildir:" "./tmp not empty"
+
+		local profdir="$(getProfileDir "$maildir")"
+		test -n "$profdir" || abort 1 "$maildir:" "not a Thunderbird profile"
+		test "$profdir" = "$storeprofdir" || abort 1 "$maildir:" "storedir and maildir must belong to same profile"
+
+		storeMaildir "$storedir" "$maildir"
+	) || x=$?; test "$x" = 0 || r=$x; done
+	return $r
+}
+
+x=0
+storedir="$1"; shift
+checkStoreDir "$storedir"
+if [ -n "$serverdir" ]; then
+	find "$serverdir" -name '*.msf' "$@"
+else
+	for maildir in "$@"; do echo $maildir; done
+fi | \
+storeMaildirs "$storedir"
+x=$?
+
+if ! $postreport; then exit $x; fi
+
+checkDanglingDir() {
+	local par="$(dirname "$1")" base="$(basename "$1")"
+	case "$base" in
+	tmp|cur) if [ -d "$par/tmp" -a -d "$par/cur" ]; then return 1; fi;;
+	*.sbd) if [ -f "${1%.sbd}.msf" ]; then return 1; fi;;
+	*) if [ -f "$1.msf" ]; then return 1; fi;;
+	esac
+	return 0
+}
+
+maybeReport() {
+	local x
+	read x && {
+	echo "$1"
+	echo "$x"
+	cat
+	} >&2 || true
+}
+
+if [ -n "$serverdir" ]; then
+	find "$serverdir" -type d | while read d; do
+		if checkDanglingDir "$d"; then echo "$d"; fi
+	done | \
+	maybeReport "unreferenced directories in $serverdir, you may want to rm these:"
+fi
+
+find "$storedir" -type f -exec stat -c'%n %h' '{}' \; | grep ' 1$' | cut '-d ' -f1 | \
+maybeReport "unreferenced messages in $storedir, you may want to rm these:"
+
+exit $x
