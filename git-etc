@@ -52,7 +52,7 @@ git_install_hook() {
 
 git_install_meta_r_hook() {
 	cat << EOF | git_install_hook "$@" git_meta_r_hook
-if git config --get alias.meta >/dev/null; then
+if which git-meta >/dev/null; then
 	SUBDIRECTORY_OK=1 . git-sh-setup
 	cd_to_toplevel
 	require_work_tree
@@ -73,7 +73,7 @@ git_install_meta_w_hook() {
 	cat << EOF | git_install_hook "$@" git_meta_w_hook
 #!/bin/sh
 ## git_meta_w_hook ##
-if git config --get alias.meta >/dev/null; then
+if which git-meta >/dev/null; then
 	git meta -w
 fi
 EOF
@@ -95,27 +95,33 @@ gitetc_init() {
 	bmount init import
 }
 
+sudogit() {
+	sudo git "$@"
+	git reset # re-init index with user's own perms
+}
+
 gitetc_install() {
 	if ! git diff --quiet; then
 		echo >&2 "abort: git detected changes"
 		git status
 		exit $ERR_GIT_DIFF_NON_EMPTY
 	fi
-	sudo $(which bmount) -u . umountAll
-	git checkout . # make sure entry points exist with non-root permission
-	sudo $(which bmount) -u . mountAll
+	sudo "$(which bmount)" -u . umountAll
+	sudogit checkout -- .
+	sudogit meta -w
+	sudo "$(which bmount)" -u . mountAll
+	test "$(bmount -u . status)" = "FULL"
 	bmount list | while read pp; do
+		pp="$(echo -e "$pp")" # bmount escapes special chars in list output
 		local pp_rel="${pp#/}"
 		if [ -d "$pp_rel" ]; then
-			sudo git checkout "$pp_rel"
+			sudogit checkout -- "$pp_rel"
 		else
 			# git checkout tries to unlink, which doesn't work for bind-mounted files
-			git cat-file -p $(git rev-parse "HEAD:$pp_rel") | sudo tee "$pp_rel" >/dev/null
+			git cat-file -p "$(git rev-parse "HEAD:$pp_rel")" | sudo tee "$pp_rel" >/dev/null
 		fi
 	done
-	local git_meta="$(git config --get alias.meta)"
-	sudo ${git_meta#!} -w
-	git diff # re-init index with user's own perms
+	sudogit meta -w
 }
 
 USAGE="Usage: $0 [-h] [init|install]"
