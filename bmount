@@ -10,6 +10,7 @@ import os
 import os.path
 import subprocess
 import sys
+import time
 import traceback
 import unittest
 
@@ -43,8 +44,9 @@ def p_to_abs(p):
 def p_get_device(p):
 	assert not os.path.islink(p) # must never call this with a symlink
 	if not os.path.exists(p): return None, None
-	# run separately because df doesn't escape spaces in paths
-	# TODO(infinity0): it also turns \n into ?; find better alternative
+	# run df twice because it doesn't escape spaces in paths
+	# WONTFIX(infinity0): it also turns \n into ? in the output, but this is
+	# too uncommon to bother accounting for. (it handles \n in the input fine.)
 	output = subprocess.check_output(["df", "--output=source", p])
 	source = output.decode("ascii").split('\n')
 	output = subprocess.check_output(["df", "--output=target", p])
@@ -186,9 +188,10 @@ class Bind(object):
 			raise ValueError("source and target cannot be same: %s" % self.source)
 		self.points = Points()
 		self._state = None
-		self._state_mtime = 0
+		self._state_atime = 0
 
 	def _readMounts(self):
+		logging.info("reading mounts from %s", MOUNTINFO)
 		state = []
 		#traceback.print_stack()
 		with open(MOUNTINFO, 'rb') as fp:
@@ -199,9 +202,9 @@ class Bind(object):
 				mount_rel = mount_rel.decode("unicode_escape")
 				(_, fs_spec, _) = part2.split(b' ', 2)
 				fs_spec = fs_spec.decode("unicode_escape")
-				# TODO(infinity0): technically we should ignore mount points that are buried
-				# under other mount points. But really if your system is like that, why the
-				# fuck are you using this tool?
+				# WONTFIX(infinity0): technically we should ignore mount points that are buried
+				# under other mount points. But I don't see a significant use-case for that to
+				# warrant the complexity of handling it.
 
 				if fs_file.startswith(self.target) or p_to_dir(fs_file) == self.target:
 					pp = p_to_abs(os.path.relpath(fs_file, self.target))
@@ -218,7 +221,7 @@ class Bind(object):
 						# have not considered the cases where src/dst traverses symlinks.
 						src_mount_rel = os.path.relpath(src, base_pt) if base_pt else None
 						if fs_spec != src_dev or mount_rel != p_to_abs(src_mount_rel):
-							logging.debug("ignore (seemingly) non-bmount mount point: %s" % fs_file)
+							logging.debug("ignore (seemingly) non-bmount mount point: %s" % encode_path(fs_file))
 							continue
 						logging.warn("extraneous mount on: %s", pp)
 					state.append(pp)
@@ -226,14 +229,11 @@ class Bind(object):
 
 	@property
 	def state(self):
-		# TODO(infinity0): perhaps we could call this not every time
-		# or maybe it doesn't matter, perhaps kernel caches it
-		mtime = os.stat(MOUNTINFO).st_mtime
-		# sometimes mtime doesn't update even after a change...
-		if self._state is None or mtime > self._state_mtime:
+		atime = time.time()
+		if self._state is None or atime > self._state_atime + 0.25: # update after a second
 			try:
 				self._state = Points(self._readMounts())
-				self._state_mtime = mtime
+				self._state_atime = atime
 			except Exception as e:
 				traceback.print_exc()
 				logging.warn("unable to parse current bind state: %s", e)
@@ -446,7 +446,6 @@ class Bind(object):
 
 
 class BindFile(object):
-	# TODO(infinity0): __enter__ and __exit__
 
 	def __init__(self, fn=DEFAULT_BINDFILE):
 		self.fn = fn
