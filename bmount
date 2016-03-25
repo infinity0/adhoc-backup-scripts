@@ -97,6 +97,12 @@ def run_unstrict(cmd, *args, **kwargs):
 	except subprocess.CalledProcessError as e:
 		logging.warn("command failed: %s" % e.output)
 
+def encode_path(path):
+	return path.encode("unicode_escape").decode("ascii")
+
+def decode_path(path):
+	return path.encode("ascii").decode("unicode_escape")
+
 
 class Points(object):
 	"""
@@ -465,15 +471,16 @@ class BindFile(object):
 		self.parseArgs(*args) # ensure valid
 		self.args = args
 		with open(self.fn, 'w') as fp:
-			print("\t".join(self.args), file=fp)
+			print("\t".join(map(encode_path, self.args)), file=fp)
 		logging.debug("file wrote: %s", self.fn)
 		self.load()
 
 	def load(self):
-		# TODO(infinity0): decode("unicode_escape") for annoying people that use \t,\n
 		with open(self.fn, 'r') as fp:
 			args = read_significant_line(fp).rstrip("\n").split("\t")
-			points = list(read_significant_lines(fp))
+			args = list(map(decode_path, args))
+			points = read_significant_lines(fp)
+			points = list(map(lambda x: decode_path(x.rstrip('\n')), points))
 
 		src, dst = self.parseArgs(*args)
 
@@ -490,8 +497,8 @@ class BindFile(object):
 		bind = Bind(src, dst)
 		logging.debug("file read: %s: %s to %s", self.fn, bind.source, bind.target)
 		try:
-			for line in points:
-				bind.insert(line.rstrip('\n'), dryrun=True, noreport=True)
+			for point in points:
+				bind.insert(point, dryrun=True, noreport=True)
 		except:
 			logging.warn("error loading file: %s", self.fn)
 			raise
@@ -504,11 +511,10 @@ class BindFile(object):
 		if self.bind is None:
 			raise ValueError("not loaded")
 
-		# TODO(infinity0): encode("unicode_escape") for annoying people that use \t,\n
 		with open(self.fn, 'w') as fp:
-			print("\t".join(self.args), file=fp)
+			print("\t".join(map(encode_path, self.args)), file=fp)
 			for pp in self.bind.points.pts:
-				print(pp, file=fp)
+				print(encode_path(pp), file=fp)
 		logging.debug("file wrote: %s", self.fn)
 
 	def insert(self, *pps, dryrun=False):
@@ -596,7 +602,10 @@ def main(*args):
 
 	b = BindFile(fn)
 
-	if opts.subcmd == "init":
+	if not hasattr(opts, "subcmd"):
+		parser.error("must specify a subcommand")
+
+	elif opts.subcmd == "init":
 		if os.path.exists(b.fn):
 			b.load()
 			if b.args == opts.args:
@@ -628,7 +637,7 @@ def main(*args):
 	if opts.subcmd == "list":
 		b.load()
 		for pp in b.bind.points.pts:
-			print(pp)
+			print(encode_path(pp))
 
 	if opts.subcmd in ["mountAll", "umountAll", "umountForce"]:
 		b.load()
