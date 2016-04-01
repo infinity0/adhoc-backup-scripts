@@ -58,15 +58,14 @@ ghettoMSFSedReplace() {
 }
 
 msfAliasForValue() {
-	local msf="$1"
-	# get all aliases with a given value
-	ghettoMSFFind "$nsp" "=$2" "\2" <"$msf"
+	local msfKv="$1" k="$2"
+	grep "=$k$" "$msfKv" | cut -f1
 }
 
 msfGetStoreAliases() {
 	# get aliases of a value, restricted to aliases which are in a "storeToken" cell
-	local msf="$1" msfStoreTok="$2" value="$3"
-	local aliases="$(msfAliasForValue "$msf" "$value")"
+	local msfKv="$1" msfStoreTok="$2" value="$3"
+	local aliases="$(msfAliasForValue "$msfKv" "$value")"
 	test -z "$aliases" && true || grep -F "$aliases" <"$msfStoreTok"
 }
 
@@ -123,7 +122,9 @@ cacheMsf() {
 	cat "$cacheMsfOrig" > "$cacheMsfCache"
 	local msf="$cacheMsfCache"
 	tempspawn "$msf" "$msf.sed"
-	local storeTokAlias="$(msfAliasForValue "$msf" storeToken)"
+	tempspawn "$msf" "$msf.kv"
+	ghettoMSFFind "$nsp" "=$nsp" "\2\t\4" < "$msf" | sort -u >"$msf.kv"
+	local storeTokAlias="$(msfAliasForValue "$msf.kv" storeToken)"
 	tempspawn "$msf" "$msf.tok"
 	ghettoMSFFind "\^$storeTokAlias" "\^($nsp)" "\5" <"$msf" | sort -u >"$msf.tok"
 }
@@ -135,15 +136,15 @@ cacheMsfCommit() {
 uncacheMsf() {
 	if test -z "$cacheMsfOrig"; then return; fi
 	cacheMsfCommit
-	rm -f "$cacheMsfCache" "$cacheMsfCache.tok" "$cacheMsfCache.sed"
+	rm -f "$cacheMsfCache" "$cacheMsfCache.kv" "$cacheMsfCache.tok" "$cacheMsfCache.sed"
 	cacheMsfOrig=
 	cacheMsfCache=
 }
 
 storeMail() {
-	local storedir="$1" maildir="$2" msf="$3" msfStoreTok="$4" msfSed="$5" from="$6" to="$7" topath="$8"
+	local storedir="$1" maildir="$2" msf="$3" msfKv="$4" msfStoreTok="$5" msfSed="$6" from="$7" to="$8" topath="$9"
 	local target="$topath/$to"
-	local toks="$(msfGetStoreAliases "$msf" "$msfStoreTok" "$from")"
+	local toks="$(msfGetStoreAliases "$msfKv" "$msfStoreTok" "$from")"
 	test -z "$toks" && return 1
 	if [ ! -e "$storedir/$target" ]; then
 		mkdir -p "$storedir/$topath"
@@ -178,7 +179,7 @@ storeMaildir() {
 		test "x$f" = "x$hash" && test -f "$storedir/$hashpath/$hash" && \
 		{ log 2 "$maildir: skip because already hashed: $f"; continue; }
 		echo "$f $date => $hashpath $hash"
-		if ! storeMail "$storedir" "$maildir" "$msf" "$msf.tok" "$msf.sed" "$f" "$hash" "$hashpath"; then
+		if ! storeMail "$storedir" "$maildir" "$msf" "$msf.kv" "$msf.tok" "$msf.sed" "$f" "$hash" "$hashpath"; then
 			if $deletedangling; then
 				rm "$maildir/cur/$f"
 			else
