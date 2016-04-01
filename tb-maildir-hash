@@ -13,7 +13,7 @@
 set -e
 
 TMPDIR="${TMPDIR:-/dev/shm}"
-COMMIT_BATCH=256
+COMMIT_BATCH=80
 abort() { local x="${1:-1}"; shift; echo >&2 "$0 abort: $@"; exit "$x"; }
 log() { if [ "$1" -le "$verbose" ]; then shift; echo >&2 "$@"; fi; }
 
