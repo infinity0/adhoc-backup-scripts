@@ -13,6 +13,7 @@
 set -e
 
 TMPDIR="${TMPDIR:-/dev/shm}"
+COMMIT_BATCH=256
 abort() { local x="${1:-1}"; shift; echo >&2 "$0 abort: $@"; exit "$x"; }
 log() { if [ "$1" -le "$verbose" ]; then shift; echo >&2 "$@"; fi; }
 
@@ -43,18 +44,17 @@ sp='[[:space:]]*'
 nsp='[^[:space:]]*'
 g6='\).*'
 # these complex expressions are to handle newlines within tokens
-ghettoMSFReplace() {
-	local k="$1" v="$2" rep="$3"
-	tr '(' '\0' | sed -zre "s/^($sp)($k)($sp)($v)($sp)($g6)/$rep/g" | tr '\0' '('
-}
 ghettoMSFFind() {
 	local k="$1" v="$2" rep="$3"
 	tr '(' '\0' | sed -nzre "s/^($sp)($k)($sp)($v)($sp)($g6)/$rep/gp" | tr '\0' '\n'
 }
-
-linesToOrRE() {
-	local re="$(tr '\n' '|')"
-	echo "${re%|}"
+ghettoMSFSedGenerate() {
+	local k="$1" v="$2" rep="$3"
+	printf "%s\n" "s/^($sp)($k)($sp)($v)($sp)($g6)/$rep/g"
+}
+ghettoMSFSedReplace() {
+	local msfSed="$1"
+	tr '(' '\0' | sed -zr -f "$msfSed" | tr '\0' '('
 }
 
 msfAliasForValue() {
@@ -72,10 +72,10 @@ msfGetStoreAliases() {
 
 msfReplaceAliasValue() {
 	# replace all values of a given alias with another value
-	local msf="$1" k="$2" fr="$3" to="$4"
-	tempspawn "$msf" "$msf.tmp"
-	ghettoMSFReplace "$k" "=$fr" "\1\2\3=$to\5\6" <"$msf" >"$msf.tmp"
-	mv "$msf.tmp" "$msf"
+	local msfSed="$1" toks="$2" fr="$3" to="$4"
+	for tok in $toks; do
+		ghettoMSFSedGenerate "$tok" "=$fr" "\1\2\3=$to\5\6" >>"$msfSed"
+	done
 }
 
 calcHash() {
@@ -95,7 +95,7 @@ calcHashPath() {
 
 cleanup=
 cleanup_trap() {
-	log 2 "cleanup [$$/$1] $2: $cleanup"
+	log 2 "cleanup [$$[$1]] $2: $cleanup"
 	eval "$cleanup"
 }
 trap_cleanup() {
@@ -122,23 +122,28 @@ cacheMsf() {
 	cacheMsfCache="$(tempfile -d "$TMPDIR")"
 	cat "$cacheMsfOrig" > "$cacheMsfCache"
 	local msf="$cacheMsfCache"
+	tempspawn "$msf" "$msf.sed"
 	local storeTokAlias="$(msfAliasForValue "$msf" storeToken)"
 	tempspawn "$msf" "$msf.tok"
-	ghettoMSFFind "\^$storeTokAlias" "\^($nsp)" "\5" <"$msf" >"$msf.tok"
+	ghettoMSFFind "\^$storeTokAlias" "\^($nsp)" "\5" <"$msf" | sort -u >"$msf.tok"
 }
-
+cacheMsfCommit() {
+	ghettoMSFSedReplace "$cacheMsfCache.sed" <"$cacheMsfCache" >"$cacheMsfOrig"
+	log 1 "committed $(wc -l "$cacheMsfCache.sed" | cut '-d ' -f1) changes to $cacheMsfOrig"
+	cat </dev/null >"$cacheMsfCache.sed"
+}
 uncacheMsf() {
 	if test -z "$cacheMsfOrig"; then return; fi
-	cat "$cacheMsfCache" > "$cacheMsfOrig"
-	rm -f "$cacheMsfCache" "$cacheMsfCache.tok"
+	cacheMsfCommit
+	rm -f "$cacheMsfCache" "$cacheMsfCache.tok" "$cacheMsfCache.sed"
 	cacheMsfOrig=
 	cacheMsfCache=
 }
 
 storeMail() {
-	local storedir="$1" maildir="$2" msf="$3" msfStoreTok="$4" from="$5" to="$6" topath="$7"
+	local storedir="$1" maildir="$2" msf="$3" msfStoreTok="$4" msfSed="$5" from="$6" to="$7" topath="$8"
 	local target="$topath/$to"
-	local toks="$(msfGetStoreAliases "$msf" "$msfStoreTok" "$from" | linesToOrRE)"
+	local toks="$(msfGetStoreAliases "$msf" "$msfStoreTok" "$from")"
 	test -z "$toks" && return 1
 	if [ ! -e "$storedir/$target" ]; then
 		mkdir -p "$storedir/$topath"
@@ -153,7 +158,7 @@ storeMail() {
 	else
 		ln "$storedir/$target" "$maildir/cur/$to"
 	fi
-	msfReplaceAliasValue "$msf" "$toks" "$from" "$to"
+	msfReplaceAliasValue "$msfSed" "$toks" "$from" "$to"
 	rm "$maildir/cur/$from"
 }
 
@@ -161,6 +166,7 @@ storeMaildir() {
 	local storedir="$1" maildir="$2"
 	cleanup="${cleanup}uncacheMsf; "
 	cacheMsf "$maildir.msf"
+	local n=0
 	local msf="$cacheMsfCache"
 	for i in "$maildir/cur"/*; do
 		local f="$(basename "$i")"
@@ -172,13 +178,15 @@ storeMaildir() {
 		test "x$f" = "x$hash" && test -f "$storedir/$hashpath/$hash" && \
 		{ log 2 "$maildir: skip because already hashed: $f"; continue; }
 		echo "$f $date => $hashpath $hash"
-		if ! storeMail "$storedir" "$maildir" "$msf" "$msf.tok" "$f" "$hash" "$hashpath"; then
+		if ! storeMail "$storedir" "$maildir" "$msf" "$msf.tok" "$msf.sed" "$f" "$hash" "$hashpath"; then
 			if $deletedangling; then
 				rm "$maildir/cur/$f"
 			else
 				log 1 "$maildir: couldn't find $f; perhaps dangling message, pass -f to delete"
 			fi
 		fi
+		n=$((n + 1))
+		test "$n" -ge "$COMMIT_BATCH" && { cacheMsfCommit; n=0; } || true
 	done
 }
 
