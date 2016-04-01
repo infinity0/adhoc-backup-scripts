@@ -35,6 +35,10 @@ done
 shift $(expr $OPTIND - 1)
 test -n "$serverdir" && test -n "$1" || test -n "$2" || { echo "$USAGE"; exit 2; }
 
+tempspawn() {
+	tempfile -n "$2" >/dev/null && cp --attributes-only --preserve "$1" "$2"
+}
+
 sp='[[:space:]]*'
 nsp='[^[:space:]]*'
 g6='\).*'
@@ -61,17 +65,15 @@ msfAliasForValue() {
 
 msfGetStoreAliases() {
 	# get aliases of a value, restricted to aliases which are in a "storeToken" cell
-	local msf="$1" storeTokenAlias="$2" value="$3"
-	local aliases="$(msfAliasForValue "$msf" "$value" | linesToOrRE)"
-	aliases="${aliases%|}"
-	ghettoMSFFind "\^$storeTokenAlias" "\^($aliases)" "\4" <"$msf"
+	local msf="$1" msfStoreTok="$2" value="$3"
+	local aliases="$(msfAliasForValue "$msf" "$value")"
+	test -z "$aliases" && true || grep -F "$aliases" <"$msfStoreTok"
 }
 
 msfReplaceAliasValue() {
 	# replace all values of a given alias with another value
 	local msf="$1" k="$2" fr="$3" to="$4"
-	tempfile -n "$msf.tmp" >/dev/null
-	cp --attributes-only --preserve "$msf" "$msf.tmp"
+	tempspawn "$msf" "$msf.tmp"
 	ghettoMSFReplace "$k" "=$fr" "\1\2\3=$to\5\6" <"$msf" >"$msf.tmp"
 	mv "$msf.tmp" "$msf"
 }
@@ -119,20 +121,24 @@ cacheMsf() {
 	cacheMsfOrig="$msf"
 	cacheMsfCache="$(tempfile -d "$TMPDIR")"
 	cat "$cacheMsfOrig" > "$cacheMsfCache"
+	local msf="$cacheMsfCache"
+	local storeTokAlias="$(msfAliasForValue "$msf" storeToken)"
+	tempspawn "$msf" "$msf.tok"
+	ghettoMSFFind "\^$storeTokAlias" "\^($nsp)" "\5" <"$msf" >"$msf.tok"
 }
 
 uncacheMsf() {
 	if test -z "$cacheMsfOrig"; then return; fi
 	cat "$cacheMsfCache" > "$cacheMsfOrig"
-	rm -f "$cacheMsfCache"
+	rm -f "$cacheMsfCache" "$cacheMsfCache.tok"
 	cacheMsfOrig=
 	cacheMsfCache=
 }
 
 storeMail() {
-	local storedir="$1" maildir="$2" msf="$3" storeTokAlias="$4" from="$5" to="$6" topath="$7"
+	local storedir="$1" maildir="$2" msf="$3" msfStoreTok="$4" from="$5" to="$6" topath="$7"
 	local target="$topath/$to"
-	local toks="$(msfGetStoreAliases "$msf" "$storeTokAlias" "$from" | linesToOrRE)"
+	local toks="$(msfGetStoreAliases "$msf" "$msfStoreTok" "$from" | linesToOrRE)"
 	test -z "$toks" && return 1
 	if [ ! -e "$storedir/$target" ]; then
 		mkdir -p "$storedir/$topath"
@@ -163,11 +169,10 @@ storeMaildir() {
 		local date="$(head -n1 "$i")"
 		local hash="$(tail -n+2 "$i" | sed -e '0,/^$/{/^X-Mozilla-Status/d}' | calcHash)"
 		local hashpath="$(calcHashPath "$hash")"
-		local storeTokAlias="$(msfAliasForValue "$msf" storeToken)"
 		test "x$f" = "x$hash" && test -f "$storedir/$hashpath/$hash" && \
 		{ log 2 "$maildir: skip because already hashed: $f"; continue; }
 		echo "$f $date => $hashpath $hash"
-		if ! storeMail "$storedir" "$maildir" "$msf" "$storeTokAlias" "$f" "$hash" "$hashpath"; then
+		if ! storeMail "$storedir" "$maildir" "$msf" "$msf.tok" "$f" "$hash" "$hashpath"; then
 			if $deletedangling; then
 				rm "$maildir/cur/$f"
 			else
@@ -223,8 +228,10 @@ storeMaildirs() {
 	while read maildir; do x=0; (
 		trap_cleanup "$maildir" # new subshell, need to install new traps
 		local maildir="${maildir%.msf}"
-		test -d "$maildir" || abort 2 "$maildir:" "not a directory"
+		maildir="${maildir%/}"
+		test -d "$maildir" || abort 1 "$maildir:" "not a directory"
 		test -d "$maildir/tmp" || abort 1 "$maildir:" "not a maildir"
+		test -f "$maildir.msf" || abort 1 "$maildir.msf:" "not a file"
 		test -z "$(ls -1 "$maildir/tmp")" || abort 1 "$maildir:" "./tmp not empty"
 
 		local profdir="$(getProfileDir "$maildir")"
