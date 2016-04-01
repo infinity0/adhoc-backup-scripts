@@ -89,7 +89,7 @@ sys.stdout.write(hashb64);"
 }
 
 calcHashPath() {
-	echo "$(expr substr "x$1" 2 2)"
+	printf "%s\n" "$(expr substr "x$1" 2 2)"
 }
 
 cleanup=
