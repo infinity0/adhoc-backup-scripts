@@ -12,6 +12,7 @@
 #   $ "$0" -s mail.riseup.net{,.store} -not -path '*/INBOX.sbd/*'
 set -e
 
+TMPDIR="${TMPDIR:-/dev/shm}"
 abort() { local x="${1:-1}"; shift; echo >&2 "$0 abort: $@"; exit "$x"; }
 log() { if [ "$1" -le "$verbose" ]; then shift; echo >&2 "$@"; fi; }
 
@@ -69,6 +70,8 @@ msfGetStoreAliases() {
 msfReplaceAliasValue() {
 	# replace all values of a given alias with another value
 	local msf="$1" k="$2" fr="$3" to="$4"
+	tempfile -n "$msf.tmp" >/dev/null
+	cp --attributes-only --preserve "$msf" "$msf.tmp"
 	ghettoMSFReplace "$k" "=$fr" "\1\2\3=$to\5\6" <"$msf" >"$msf.tmp"
 	mv "$msf.tmp" "$msf"
 }
@@ -88,10 +91,48 @@ calcHashPath() {
 	echo "$(expr substr "x$1" 2 2)"
 }
 
+cleanup=
+cleanup_trap() {
+	log 2 "cleanup [$$/$1] $2: $cleanup"
+	eval "$cleanup"
+}
+trap_cleanup() {
+	cleanup=
+	# get the actual process id, even if we're in a subshell; see
+	# https://stackoverflow.com/questions/20725925/get-pid-of-current-subshell
+	# we rely that bash/dash doesn't spawn a subshell with $(single-command)
+	PID="$(exec sh -c 'echo $PPID')"
+	# "trap - EXIT" prevents double-clean, see
+	# https://stackoverflow.com/questions/8122779/is-it-necessary-to-specify-traps-other-than-exit
+	trap "cleanup_trap $PID $1; trap - EXIT" EXIT
+	for sig in HUP INT QUIT PIPE ALRM TERM; do
+		# re-raise the signal after clearing its own handler, so that we exit correctly
+		trap "cleanup_trap $PID $1; trap - EXIT $sig; kill -$sig $PID 2>/dev/null;" "$sig"
+	done
+}
+
+cacheMsfOrig=
+cacheMsfCache=
+cacheMsf() {
+	local msf="$1"
+	test -z "$cacheMsfOrig" || abort 1 "cacheMsf: bad call, already cached"
+	cacheMsfOrig="$msf"
+	cacheMsfCache="$(tempfile -d "$TMPDIR")"
+	cat "$cacheMsfOrig" > "$cacheMsfCache"
+}
+
+uncacheMsf() {
+	if test -z "$cacheMsfOrig"; then return; fi
+	cat "$cacheMsfCache" > "$cacheMsfOrig"
+	rm -f "$cacheMsfCache"
+	cacheMsfOrig=
+	cacheMsfCache=
+}
+
 storeMail() {
-	local storedir="$1" maildir="$2" storeTokAlias="$3" from="$4" to="$5" topath="$6"
+	local storedir="$1" maildir="$2" msf="$3" storeTokAlias="$4" from="$5" to="$6" topath="$7"
 	local target="$topath/$to"
-	local toks="$(msfGetStoreAliases "$maildir.msf" "$storeTokAlias" "$from" | linesToOrRE)"
+	local toks="$(msfGetStoreAliases "$msf" "$storeTokAlias" "$from" | linesToOrRE)"
 	test -z "$toks" && return 1
 	if [ ! -e "$storedir/$target" ]; then
 		mkdir -p "$storedir/$topath"
@@ -106,12 +147,15 @@ storeMail() {
 	else
 		ln "$storedir/$target" "$maildir/cur/$to"
 	fi
-	msfReplaceAliasValue "$maildir.msf" "$toks" "$from" "$to"
+	msfReplaceAliasValue "$msf" "$toks" "$from" "$to"
 	rm "$maildir/cur/$from"
 }
 
 storeMaildir() {
 	local storedir="$1" maildir="$2"
+	cleanup="${cleanup}uncacheMsf; "
+	cacheMsf "$maildir.msf"
+	local msf="$cacheMsfCache"
 	for i in "$maildir/cur"/*; do
 		local f="$(basename "$i")"
 		test "$(stat -c%h "$i" 2>/dev/null)" = 1 || \
@@ -119,11 +163,11 @@ storeMaildir() {
 		local date="$(head -n1 "$i")"
 		local hash="$(tail -n+2 "$i" | sed -e '0,/^$/{/^X-Mozilla-Status/d}' | calcHash)"
 		local hashpath="$(calcHashPath "$hash")"
-		local storeTokAlias="$(msfAliasForValue "$maildir.msf" storeToken)"
+		local storeTokAlias="$(msfAliasForValue "$msf" storeToken)"
 		test "x$f" = "x$hash" && test -f "$storedir/$hashpath/$hash" && \
 		{ log 2 "$maildir: skip because already hashed: $f"; continue; }
 		echo "$f $date => $hashpath $hash"
-		if ! storeMail "$storedir" "$maildir" "$storeTokAlias" "$f" "$hash" "$hashpath"; then
+		if ! storeMail "$storedir" "$maildir" "$msf" "$storeTokAlias" "$f" "$hash" "$hashpath"; then
 			if $deletedangling; then
 				rm "$maildir/cur/$f"
 			else
@@ -167,9 +211,7 @@ checkStoreDir() {
 	( execLockProfileDir "$storeprofdir" check ) || abort 1 "Thunderbird in use on: $storeprofdir"
 	( execLockProfileDir "$storeprofdir" forever ) &
 	lockpid="$!"
-	# "trap - EXIT" prevents double-clean, see
-	# https://stackoverflow.com/questions/8122779/is-it-necessary-to-specify-traps-other-than-exit
-	trap "kill -TERM $lockpid; trap - EXIT" EXIT HUP INT QUIT PIPE ALRM TERM
+	cleanup="${cleanup}kill -TERM $lockpid; "
 }
 
 storeMaildirs() {
@@ -179,6 +221,7 @@ storeMaildirs() {
 	# r is the exit code of the last such subshell that failed
 	local r=0 x=0
 	while read maildir; do x=0; (
+		trap_cleanup "$maildir" # new subshell, need to install new traps
 		local maildir="${maildir%.msf}"
 		test -d "$maildir" || abort 2 "$maildir:" "not a directory"
 		test -d "$maildir/tmp" || abort 1 "$maildir:" "not a maildir"
@@ -195,6 +238,7 @@ storeMaildirs() {
 
 x=0
 storedir="$1"; shift
+trap_cleanup main
 checkStoreDir "$storedir"
 if [ -n "$serverdir" ]; then
 	find "$serverdir" -name '*.msf' "$@"
