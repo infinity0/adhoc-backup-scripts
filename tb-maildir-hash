@@ -129,12 +129,13 @@ cacheMsf() {
 	ghettoMSFFind "\^$storeTokAlias" "\^($nsp)" "\5" <"$msf" | sort -u >"$msf.tok"
 }
 cacheMsfCommit() {
+	test -s "$cacheMsfCache.sed" || return 0
 	ghettoMSFSedReplace "$cacheMsfCache.sed" <"$cacheMsfCache" >"$cacheMsfOrig"
 	log 1 "committed $(wc -l "$cacheMsfCache.sed" | cut '-d ' -f1) changes to $cacheMsfOrig"
 	cat </dev/null >"$cacheMsfCache.sed"
 }
 uncacheMsf() {
-	if test -z "$cacheMsfOrig"; then return; fi
+	test -z "$cacheMsfOrig" && return 0
 	cacheMsfCommit
 	rm -f "$cacheMsfCache" "$cacheMsfCache.kv" "$cacheMsfCache.tok" "$cacheMsfCache.sed"
 	cacheMsfOrig=
@@ -236,10 +237,14 @@ storeMaildirs() {
 	local r=0 x=0
 	while read maildir; do x=0; (
 		trap_cleanup "$maildir" # new subshell, need to install new traps
-		local maildir="${maildir%.msf}"
-		maildir="${maildir%/}"
+		if [ "$maildir" != "${maildir%.msf}" -a ! -e "${maildir%.msf}" ]; then
+			log 1 "no corresponding maildir; skip: $maildir"
+			exit 0
+		fi
+		maildir="${maildir%.msf}"
 		test -d "$maildir" || abort 1 "$maildir:" "not a directory"
 		test -d "$maildir/tmp" || abort 1 "$maildir:" "not a maildir"
+		maildir="${maildir%/}"
 		test -f "$maildir.msf" || abort 1 "$maildir.msf:" "not a file"
 		test -z "$(ls -1 "$maildir/tmp")" || abort 1 "$maildir:" "./tmp not empty"
 
