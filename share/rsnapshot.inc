@@ -9,6 +9,7 @@ use_lazy_deletes	1
 rsync_numtries	3
 one_fs		1
 link_dest	0	# not needed because we have GNU cp
+rsync_short_args	-aH	# -H is more accurate, modern systems can handle it
 
 ## Logging and locking
 
