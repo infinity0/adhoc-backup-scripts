@@ -24,11 +24,13 @@ deletedangling=false
 postreport=false
 verbose=0
 serverdir=
-while getopts 'fvrs:h?' o; do
+nocheckprof=false
+while getopts 'fvrns:h?' o; do
 	case $o in
 	f )	deletedangling=true;;
 	v ) verbose="$((verbose + 1))";;
 	r ) postreport=true;;
+	n ) nocheckprof=true;;
 	s ) serverdir="$OPTARG";;
 	h|\? ) echo "$USAGE"; exit 2;;
 	esac
@@ -130,9 +132,13 @@ cacheMsf() {
 }
 cacheMsfCommit() {
 	test -s "$cacheMsfCache.sed" || return 0
-	ghettoMSFSedReplace "$cacheMsfCache.sed" <"$cacheMsfCache" >"$cacheMsfOrig"
+	#read -p "cacheMsfCommit start; press enter to continue..." x
+	ghettoMSFSedReplace "$cacheMsfCache.sed" <"$cacheMsfCache" >"$cacheMsfCache.new"
+	cp "$cacheMsfCache.new" "$cacheMsfOrig"
 	log 1 "committed $(wc -l "$cacheMsfCache.sed" | cut '-d ' -f1) changes to $cacheMsfOrig"
+	mv "$cacheMsfCache.new" "$cacheMsfCache"
 	cat </dev/null >"$cacheMsfCache.sed"
+	#read -p "cacheMsfCommit end; press enter to continue..." x
 }
 uncacheMsf() {
 	test -z "$cacheMsfOrig" && return 0
@@ -220,6 +226,7 @@ checkStoreDir() {
 	local storedir="$1"
 	local storeprofdir="$(getProfileDir "$storedir")"
 	test -d "$storedir" || abort 1 "not a directory: $storedir"
+	$nocheckprof && return 0
 	test -n "$storeprofdir" || abort 1 "not a Thunderbird profile: $storedir"
 	# this is very hacky and the double-lock is not fully-correct, but the best that
 	# can feasibly be accomplished in a shell script and still be reasonably comprehensible
@@ -248,11 +255,13 @@ storeMaildirs() {
 		test -f "$maildir.msf" || abort 1 "$maildir.msf:" "not a file"
 		test -z "$(ls -1 "$maildir/tmp")" || abort 1 "$maildir:" "./tmp not empty"
 
+		if ! $nocheckprof; then
 		local profdir="$(getProfileDir "$maildir")"
 		test -n "$profdir" || abort 1 "$maildir:" "not a Thunderbird profile"
 		test "$profdir" = "$storeprofdir" || abort 1 "$maildir:" "storedir and maildir must belong to same profile"
+		fi
 
-		storeMaildir "$storedir" "$maildir"
+		storeMaildir 0<&3 "$storedir" "$maildir"
 	) || x=$?; test "$x" = 0 || r=$x; done
 	return $r
 }
@@ -261,12 +270,14 @@ x=0
 storedir="$1"; shift
 trap_cleanup main
 checkStoreDir "$storedir"
+{
 if [ -n "$serverdir" ]; then
 	find "$serverdir" -name '*.msf' "$@"
 else
 	for maildir in "$@"; do echo $maildir; done
 fi | \
 storeMaildirs "$storedir"
+} 3<&0
 x=$?
 
 if ! $postreport; then exit $x; fi
