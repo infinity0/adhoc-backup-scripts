@@ -112,7 +112,7 @@ find_non_dpkg_configs() {
 		find "$x";
 	done | sort -u \
 	  | comm --nocheck-order -23 \
-	      - <(dlocate --filename-only -F '/etc' | grep '^/etc')
+	      - <(dlocate --filename-only -F '/etc' | grep '^/etc' | sort -u)
 	# dlocate has a bug which prevents regexp from working properly
 	# see #653279
 	# otherwise we would use dlocate '^/etc' instead
