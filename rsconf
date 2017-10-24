@@ -102,7 +102,10 @@ find_all_except_gitignore() {
 		# also keep symlinks as they cost next to nothing to store
 		find "$src" -xtype d -name .git -execdir sh -c \
 		  'git ls-files -oi --directory --exclude-per-directory=.gitignore '"${args[*]}"' |
-		  { while read f; do test -h "$f" || echo "$PWD/$f"; done; }' \; > "$tmp"
+		   { while read f; do test -h "$f" || echo "$PWD/$f"; done; }' \; >> "$tmp"
+		find "$src" -xtype d -name .rsconf-git -execdir sh -c \
+		  'GIT_DIR=.rsconf-git git ls-files -oi --directory --exclude-per-directory=.rsconf-ignore '"${args[*]}"' |
+		   { while read f; do test -h "$f" || echo "$PWD/$f"; done; }' \; >> "$tmp"
 		echo "$src	exclude_file=$tmp"
 	done
 }
