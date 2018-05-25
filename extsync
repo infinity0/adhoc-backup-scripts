@@ -4,39 +4,51 @@
 USAGE="Usage: $0 -r <REMOTE> [-l <LOCAL>] [OPTIONS] <DIRECTION> <DIR> [<DIR> ...]"
 
 abspath() { cd "$1"; pwd; cd "$OLDPWD"; }
-run_d() { test -r "$1/$2" && ( cd "$1" && "./$2" ); }
+run_d() { test ! -r "$1" || "./$1"; }
+abort() { echo >&2 "$2"; exit $1; }
 
 DRYRUN=false
 CONFIRM=true
 rrsync() {
+	local wrap=$1
+	shift 1
+
+	local run=env
+	local failmsg="$0: rsync failed"
+	if [ -r "$wrap" ]; then
+		run="./$wrap"
+		failmsg="$0: ./$wrap failed"
+	fi
 	if $DRYRUN; then
 		echo "${PS4}rsync $@"
 		return
 	fi
 	if $CONFIRM; then
-		rsync -n "$@" 2>&1 | less
+		"$run" rsync -n "$@" 2>&1 | less
 		read -p "Execute this run? [y/N] " x
 		test "$x" = "y" || return 1
 	fi
-	rsync "$@"
+
+	"$run" rsync "$@" || abort 1 "$failmsg"
 }
 
 RFLAGS="-acvxz --no-g --no-o --delete"
-runsync() {
+runsync() {(
 	local direc="$1"
 	local dir_l="$2"
 	local dir_r="$3"
+	cd "$dir_l"
 	case "$direc" in
 	u|up)
-		run_d "$dir_l" extsync.pre_u.rc
-		rrsync $RFLAGS -u "$dir_l/" "$dir_r/"
+		run_d extsync.pre_u.rc || abort 1 "$0: ./extsync.pre_u.rc failed"
+		rrsync extsync.wrap_u.rc $RFLAGS -u "$dir_l/" "$dir_r/"
 		;;
 	d|down)
-		rrsync $RFLAGS -u "$dir_r/" "$dir_l/"
-		run_d "$dir_l" extsync.post_d.rc
+		rrsync extsync.wrap_d.rc $RFLAGS -u "$dir_r/" "$dir_l/"
+		run_d extsync.post_d.rc || abort 1 "$0: ./extsync.post_d.rc failed"
 		;;
 	esac
-}
+)}
 
 type colordiff >/dev/null 2>&1 && DIFF=colordiff || {
 	echo >&2 "colordiff(1) not found; using diff(1) instead"
@@ -84,7 +96,6 @@ run() {
 	$cmd "$direc" "$dir_l" "$dir_r"
 }
 
-abort() { echo >&2 "$2"; exit $1; }
 BASE_L="${HOME:-}"
 RUNCMD=runsync
 while getopts r:l:dnyh o; do
