@@ -164,7 +164,8 @@ file_expand2fs() {
 ## block device functions
 ################################################################################
 
-BADBLOCKS=true
+BADBLOCKS=${BADBLOCKS:-true}
+RNGFILL=${RNGFILL:-true}
 blk_init() {
 	_precond $S_CRYPT_PREINIT
 	test -f "$BLK_KEY" || {
@@ -180,8 +181,10 @@ blk_init() {
 		log "running badblocks (set BADBLOCKS=false to skip, e.g. for non-physical device)"
 		badblocks -svw -b 1048576 "$DEV"
 	fi
-	log "filling $BLK with random data"
-	blk_random 0
+	if $RNGFILL; then
+		log "filling $BLK with random data (set RNGFILL=false to skip, e.g. if already done)"
+		blk_random 0
+	fi
 
 	log "create $BLK with key $BLK_KEY and filesystem $BLK_FS"
 	expr "$LUKS_CIPHER" : '.*xts.*' >/dev/null && key_size=512 || key_size=256
@@ -218,7 +221,7 @@ blk_mount() {
 		mkdir -p "$BLK_MNT"
 	}
 	sudo cryptsetup luksOpen --header "$BLK_HEADER" -d "$BLK_KEY" "$DEV" "$BLK_CRYPT"
-	sudo mount "/dev/mapper/$BLK_CRYPT" "$DST"
+	sudo mount $MOUNTOPTS "/dev/mapper/$BLK_CRYPT" "$DST"
 	_postcond $S_PLAIN_MOUNTED
 }
 
