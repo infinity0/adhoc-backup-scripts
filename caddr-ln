@@ -1,0 +1,247 @@
+#!/bin/bash
+# Manage a repository of content-addressed storage
+
+set -e
+
+USAGE="Usage: $0 [-hnvio]"
+
+CADDR=".caddr"
+CADDRL="caddr-select"
+CADDRX="caddr.excludes"
+log() { echo >&2 "$(basename $0): $@"; }
+
+DRY_RUN=false
+VERBOSE=false
+ORPHANS=false
+REALHASH=false
+INTERACTIVE=false
+while getopts hnviro o; do
+	case $o in
+	n ) DRY_RUN=true;;
+	v ) VERBOSE=true;;
+	i ) INTERACTIVE=true;;
+	r ) REALHASH=true;;
+	o ) ORPHANS=true;;
+	h|\? ) cat >&2 <<eof
+$USAGE
+
+Manage a repository of content-addressed storage.
+
+Usually, running this with no args will "do the right thing". You probably want
+to run this in a git repo set up like:
+
+  $ git init
+  $ { echo '.git/*'; echo .gitignore; } > caddr.excludes
+  $ echo '/.caddr' > .gitignore
+  $ $0 -vo
+  $ git add .
+
+Flags:
+  -h                        This help text.
+  -n                        Dry run, only report but don't run commands.
+  -v                        Verbose, report what commands are run.
+  -i                        Interactive mode, ask which store / base filename
+                            to store the data under.
+  -r                        Use real hash when doing a dry-run, otherwise uses
+                            a fake hash with unrealistic duplicate detection.
+  -o                        Report orphans and duplicates. Without this flag,
+                            only reports broken unfixable links.
+
+Files:
+  .caddr/*                  main store
+  .caddr-*/*                other stores
+  caddr-select-cstore       custom store selector    (default: echo ".caddr")
+  caddr-select-fname        custom filename selector (default: basename)
+  caddr.excludes            find(1) pattern of files to not touch
+
+stdout is machine-parseable and reports untidy situations, in the following
+format:
+
+  broken_link <link path e.g. path/to/link>
+  [..]
+  orphan <store path e.g. .caddr-123/hhh>
+  [..]
+  duplicate <store hash e.g. hhh>
+  [..]
+eof
+		exit 2;;
+	esac
+done
+shift `expr $OPTIND - 1`
+
+find_cbase() {
+	local dir="$1"
+	local origdir="$1"
+	while true; do
+		if [ -h "$dir" ]; then
+			log "$dir is a directory symlink, can't handle those atm"
+			return 1
+		elif [ -d "$dir/$CADDR" ]; then
+			echo "$dir"
+			return 0
+		elif [ "$dir" != "$(dirname "$dir")" ]; then
+			dir="$(dirname "$dir")"
+		else
+			log "couldn't find $CADDR in any ancestor of $origdir"
+			return 1
+		fi
+	done
+}
+
+run() {
+	if "$DRY_RUN"; then
+		log "would run: $@"
+	elif "$VERBOSE"; then
+		log "running: $@"
+		"$@"
+	else
+		"$@"
+	fi
+}
+
+select_cstore() {
+	local cbase="$1"
+	local file="$2"
+	local cstore="$CADDR"
+	if [ -x "$cbase/$CADDRL-cstore" ]; then
+		cstore="$("$cbase/$CADDRL-cstore" "$cbase" "$file")"
+	fi
+	if [ "$(basename "$cstore")" = "$cstore" ] && [ "$cstore" = "$CADDR" -o "$cstore" != "${cstore#${CADDR}-}" ]; then
+		echo "$cstore"
+	else
+		log "bad result from $cbase/$CADDRL-cstore $cbase $file: $cstore"
+		return 1
+	fi
+}
+
+select_fname() {
+	local cbase="$1"
+	local file="$2"
+	local fname="$(basename "$file")"
+	if [ -x "$cbase/$CADDRL-fname" ]; then
+		fname="$("$cbase/$CADDRL-fname" "$cbase" "$file")"
+	fi
+	if [ "$(basename "$fname")" = "$fname" ]; then
+		echo "$fname"
+	else
+		log "bad result from $cbase/$CADDRL-fname $cbase $file: $fname"
+		return 1
+	fi
+}
+
+strip_cstore() {
+	local x="${1#${CADDR}/}"
+	echo "${x#${CADDR}-*/}";
+}
+
+findx() {
+	local b="$1"
+	shift
+	if [ -f "$b/$CADDRX" ]; then readarray -t fexc < "$b/$CADDRX"; fi
+	local args=()
+	for i in "${fexc[@]}"; do args+=( -not -path "$b/$i" ); done
+	find "$b" \
+	  -not -path "$b/$CADDR"'/*' \
+	  -not -path "$b/$CADDR"'-*/*' \
+	  -not -path "$b/$CADDRL"'-*' \
+	  -not -path "$b/$CADDRX" \
+	  "${args[@]}" \
+	  "$@"
+}
+
+store_hash() {
+	if $DRY_RUN && ! $REALHASH; then
+		local hash="$(echo "$1" | sha256sum | cut -f1 '-d ' | xxd -r -p | base64 | tr '+/' '-_')"
+		echo "${hash:0:2}/${hash:0:4}_____DUMMY_HASH_____${hash:24:999}"
+	else
+		if $VERBOSE; then log "calculating hash for: $1"; fi
+		local hash="$(sha256sum "$1" | cut -f1 '-d ' | xxd -r -p | base64 | tr '+/' '-_')"
+		echo "${hash:0:2}/${hash}"
+	fi
+}
+hash0="$(store_hash /dev/null 2>/dev/null)"
+
+hashes_only() {
+	while read x; do strip_cstore "$x"; done | cut -b-"${#hash0}"
+}
+
+mkdir_mv() {
+	run mkdir -p "$(dirname "$2")"
+	run mv "$1" "$2"
+}
+
+# emphasise that this is for main stdout,
+# in the "report" format described in the help text
+report() {
+	echo "$@"
+}
+
+store_file() {
+	local cbase="$1"
+	local file="$2"
+	# "local" always returns 0 and prevents set -e from erroring here...
+	# not sure best way to fix this...
+	cstore="$(select_cstore "$cbase" "$file")"
+	fname="$(select_fname "$cbase" "$file")"
+	if $INTERACTIVE; then
+		while true; do
+			read -p "storing in $cstore with name $fname, type Y/<enter> to accept, or else new values: " x y <&3
+			case "$x" in
+			Y|"")	break;;
+			*)	cstore="$x";
+				case "$y" in
+				"")	break;;
+				*)	fname="$y";;
+				esac
+				;;
+			esac
+		done
+	fi
+	local storepath="$(store_hash "$file")_$fname"
+	mkdir_mv "$file" "$cbase/$cstore/$storepath"
+	run ln -srfT "$cbase/$cstore/$storepath" "$file"
+}
+
+prestrip_link() {
+	local l="$1"
+	while [ "$l" != "${l#../}" ]; do
+		l="${l#../}"
+	done
+	echo "$l"
+}
+
+fixup_link() {
+	local cbase="$1"
+	local link="$2"
+	local cpath="$(prestrip_link "$(readlink "$link")")"
+	if [ "$cpath" = "$(strip_cstore "$cpath")" ]; then
+		# other random symlink, do nothing
+		return
+	fi
+	run ln -srfT "$cbase/$cpath" "$link"
+	if [ ! -e "$cbase/$cpath" ]; then
+		report "broken_link $2"
+	fi
+}
+
+ls_all_store() {
+	local cbase="$1"
+	find "$cbase/$CADDR" "$cbase/$CADDR"-* -type f 2>/dev/null | while read x; do echo "${x#$cbase/}"; done
+}
+
+ls_all_main() {
+	local cbase="$1"
+	findx "$cbase" -type l -execdir readlink '{}' \; | while read x; do prestrip_link "$x"; done
+}
+
+cbase="$(find_cbase "$PWD")"
+
+exec 3<&1
+findx . -type f | while read x; do store_file "$cbase" "$x"; done
+findx . -xtype l | while read x; do fixup_link "$cbase" "$x"; done
+
+if $ORPHANS; then
+	comm -23 <(ls_all_store "$cbase" | sort -u) <(ls_all_main "$cbase" | sort -u) | while read x; do report "orphan $x"; done
+	ls_all_store "$cbase" | hashes_only | sort | uniq -d | while read x; do report "duplicate $x"; done
+	# TODO: make it easier to de-dupe these
+fi
