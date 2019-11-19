@@ -5,6 +5,8 @@
 
 abort() { local x="$1"; shift; echo >&2 "$@"; exit "$x"; }
 
+NATIVE="$(dpkg --print-architecture)"
+
 # Save to $STATE.new - we can't save to $STATE directly because dialog provides
 # no way to distinguish between empty output vs operation cancelled.
 save_state() {
@@ -43,28 +45,31 @@ maybe_invert() {
 #
 # old stdout (tty) must be saved to fd 3 before calling, e.g. with `exec 3>&1`
 user_select() {
-	local tag="$1" query="$2" title="$3" sel="$4" sweep="$5"
+	local tag="$1" query="$2" filter="$3" title="$4" sel="$5" sweep="$6"
 	aptitude search --disable-columns -F '%p %d' "!~v $query" | sort -k1 | {
 	local argsY=()
 	local argsN=()
-	local namesf=$(mktemp --tmpdir=/dev/shm apt-clean.XXXXXXXXXX)
-	trap "rm $namesf" EXIT INT TERM
-	while read name desc; do
-		if read_state "$tag" | grep -qxF "$name"; then
-			argsY+=( "$name" "$desc" "on" )
-		else
-			argsN+=( "$name" "$desc" "off" )
+	local pkgsf=$(mktemp --tmpdir=/dev/shm apt-clean.XXXXXXXXXX)
+	trap 'excode=$?; '"rm $pkgsf"'; trap - EXIT; exit $excode' EXIT HUP INT QUIT PIPE TERM
+	while read pkg desc; do
+		if ! eval "$filter" >/dev/null 2>/dev/null; then
+			continue
 		fi
-		echo "$name" >> "$namesf"
+		if read_state "$tag" | grep -qxF "$pkg"; then
+			argsY+=( "$pkg" "$desc" "on" )
+		else
+			argsN+=( "$pkg" "$desc" "off" )
+		fi
+		echo "$pkg" >> "$pkgsf"
 	done
-	sort "$namesf" -o "$namesf"
-	if ! [ -s "$namesf" ]; then return; fi
+	sort "$pkgsf" -o "$pkgsf"
+	if ! [ -s "$pkgsf" ]; then return; fi
 
 	# skip dialog if everything already selected
 	if $SKIP_FULL && [ "${#argsN[@]}" -eq 0 ]; then
 		# discard previously-selected entries that are no longer valid i.e.
 		# didn't show up in the query. the `git diff` will reveal them anyway.
-		comm -12 "$namesf" <(read_state "$tag" | sort) | save_state "$tag"
+		comm -12 "$pkgsf" <(read_state "$tag" | sort) | save_state "$tag"
 		commit_state
 		return
 	fi
@@ -72,19 +77,19 @@ user_select() {
 	rm -f "$STATE.tmp"
 	if dialog --output-fd 4 --separate-output \
 	  --title "$title" --checklist "Select items that you would like to $sel.\n\nEverything else will be $sweep." \
-	  43 132 40 "_" "INVERT SELECTION" "" "${argsN[@]}" "${argsY[@]}" 4> >(maybe_invert "$namesf" | save_state "$tag") >&3; then
+	  43 132 40 "_" "INVERT SELECTION" "" "${argsN[@]}" "${argsY[@]}" 4> >(maybe_invert "$pkgsf" | save_state "$tag") >&3; then
 		# sleep because save_state happens in bg
 		while [ -f "$STATE.tmp" ]; do sleep 0.1; done
 		commit_state
 		# aptitude sorts differently
-		comm -23 "$namesf" <(read_state "$tag" | sort)
+		comm -23 "$pkgsf" <(read_state "$tag" | sort)
 	fi
 	}
 }
 
 user_run() {
 	exec 3>&1 # save stdout for user_select
-	xargs --verbose -r -a <(user_select "${@:1:5}" | tee "$STATE.round") "${@:6}"
+	xargs --verbose -r -a <(user_select "${@:1:6}" | tee "$STATE.round") "${@:7}"
 	local X=$?
 	if $AUTO_NEXT; then
 		echo "step \"$1\" complete."
@@ -150,7 +155,7 @@ shift `expr $OPTIND - 1`
 STATE=${1:-apt-clean.txt}
 touch "$STATE" "$STATE.tmp" "$STATE.round" || abort 3 "cannot write to one of $STATE{,.tmp,.round}"
 cleanup() { rm -f "$STATE.tmp" "$STATE.round" 2>/dev/null; exit; }
-trap cleanup EXIT
+trap 'excode=$?; cleanup; trap - EXIT; exit $excode' EXIT HUP INT QUIT PIPE TERM
 
 test -z "$(aptitude search "(~prequired|~E) $CUR_ARCH !~i")" || abort 4 "Your system appears to be FUBAR, try \`aptitude install '(~prequired|~E) $CUR_ARCH'\`."
 test -n "$(git ls-tree HEAD -- "$STATE")" && USING_GIT=true
@@ -165,49 +170,60 @@ fi
 while $imperfect; do
 imperfect=false
 
-user_run 'block-rec' '~RBrecommends:~i !~i' 'broken recommends' \
+user_run 'block-rec' '~RBrecommends:~i !~i' true 'broken recommends' \
   "keep uninstalled, even if recommended by another installed package.\n  - You might do this if e.g. it takes up too much space, or it conflicts with another installed package" \
   "installed" \
+  true \
   aptitude --prompt install \
   || imperfect=true
 
-user_run 'block-imp' "~pimportant $CUR_ARCH !~i" 'uninstalled important packages' \
+user_run 'block-imp' "~pimportant $CUR_ARCH !~i" true 'uninstalled important packages' \
   "keep uninstalled, which should only be packages where a functional alternative (e.g. a different version or flavour) is already installed" \
   "installed" \
+  true \
   aptitude --prompt install \
   || imperfect=true
 
-user_run 'manual-sub' "~i !($ESSENTIAL) !($TOP_LEVEL) !~M" 'not top-level, non-automatic' \
+user_run 'manual-sub' "~i !($ESSENTIAL) !($TOP_LEVEL) !~M" true 'not top-level, non-automatic' \
   "keep installed, even if (theoretically, in the future) nothing else depends on it" \
   "marked automatic, which means it will be removed if no longer required, but otherwise kept" \
+  true \
   aptitude --prompt markauto \
   || imperfect=true
 
-user_run 'auto-abstop' "~i !($ESSENTIAL) $ABS_TOP_LEVEL ~M" 'abs-top-level, automatic' \
+user_run 'auto-abstop' "~i !($ESSENTIAL) $ABS_TOP_LEVEL ~M" true 'abs-top-level, automatic' \
   "be automatically removed. They will no longer show up here next time, which is what you want" \
   "marked manual, which means it will be retained even if nothing else depends on it" \
+  true \
   aptitude --prompt unmarkauto \
   || imperfect=true
 
-user_run 'manual-top' "~i !($ESSENTIAL) $TOP_LEVEL !~M" 'top-level, non-automatic' \
+user_run 'manual-top' "~i !($ESSENTIAL) $TOP_LEVEL !~M" true 'top-level, non-automatic' \
   "keep installed, even if nothing else depends on it" \
   "removed, which may benignly cause other autoremovals and another round to be executed" \
+  true \
   aptitude --prompt remove \
   || imperfect=true
 
-user_run 'auto-top' "~i !($ESSENTIAL) $TOP_LEVEL ~M" 'top-level, automatic' \
+user_run 'auto-top' "~i !($ESSENTIAL) $TOP_LEVEL ~M" true 'top-level, automatic' \
   "keep automatically installed as a result of a suggestion.\n  - If you want to make these unconditionally manually installed, you should 'aptitude unmarkauto' these later, and re-run this script" \
   "uninstalled.\n  - $LOCALITY_CAVEAT" \
   aptitude --prompt remove \
   || imperfect=true
 
-user_run 'keep-config' '~c' 'uninstalled but with configuration' \
+user_run 'foreign-arch' '~rforeign ~i' '! dpkg-query -W "${pkg%:*}:$NATIVE"' 'installed-foreign without installed-native' \
+  "keep installed, even if the corresponding native package isn't installed" \
+  "removed, which might trigger aptitude to try to install the native package" \
+  aptitude --prompt remove \
+  || imperfect=true
+
+user_run 'keep-config' '~c' true 'uninstalled but with configuration' \
   "keep config files for" \
   "purged" \
   aptitude --prompt purge \
   || imperfect=true
 
-user_run 'maybe-dummy' "~i !($ESSENTIAL) $TOP_LEVEL (~ddummy|~dtransitional|~d\"safely removed\")" 'possibly transitional or dummy packages' \
+user_run 'maybe-dummy' "~i !($ESSENTIAL) $TOP_LEVEL (~ddummy|~dtransitional|~d\"safely removed\")" true 'possibly transitional or dummy packages' \
   "keep installed, i.e. for which the heuristic (simple regex) we use here is incorrect" \
   "purged, since it is simply a dummy or transitional package.\n  - $LOCALITY_CAVEAT" \
   aptitude --prompt purge \
