@@ -9,7 +9,7 @@ For small data that changes often, e.g. project work, config files
 
 -- RETAIN
 daily	28
-weekly	8
+weekly	12
 quarter	20
 
 -- CRONTAB
@@ -25,8 +25,8 @@ For large static data that doesn't change often, e.g. media
 604800
 
 -- RETAIN
-weekly	4
-monthly	12
+weekly	12
+monthly	9
 yearly	5
 
 -- CRONTAB
