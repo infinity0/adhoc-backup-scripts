@@ -173,35 +173,30 @@ imperfect=false
 user_run 'block-rec' '~RBrecommends:~i !~i' true 'broken recommends' \
   "keep uninstalled, even if recommended by another installed package.\n  - You might do this if e.g. it takes up too much space, or it conflicts with another installed package" \
   "installed" \
-  true \
   aptitude --prompt install \
   || imperfect=true
 
 user_run 'block-imp' "~pimportant $CUR_ARCH !~i" true 'uninstalled important packages' \
   "keep uninstalled, which should only be packages where a functional alternative (e.g. a different version or flavour) is already installed" \
   "installed" \
-  true \
   aptitude --prompt install \
   || imperfect=true
 
 user_run 'manual-sub' "~i !($ESSENTIAL) !($TOP_LEVEL) !~M" true 'not top-level, non-automatic' \
   "keep installed, even if (theoretically, in the future) nothing else depends on it" \
   "marked automatic, which means it will be removed if no longer required, but otherwise kept" \
-  true \
   aptitude --prompt markauto \
   || imperfect=true
 
 user_run 'auto-abstop' "~i !($ESSENTIAL) $ABS_TOP_LEVEL ~M" true 'abs-top-level, automatic' \
   "be automatically removed. They will no longer show up here next time, which is what you want" \
   "marked manual, which means it will be retained even if nothing else depends on it" \
-  true \
   aptitude --prompt unmarkauto \
   || imperfect=true
 
 user_run 'manual-top' "~i !($ESSENTIAL) $TOP_LEVEL !~M" true 'top-level, non-automatic' \
   "keep installed, even if nothing else depends on it" \
   "removed, which may benignly cause other autoremovals and another round to be executed" \
-  true \
   aptitude --prompt remove \
   || imperfect=true
 
