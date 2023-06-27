@@ -101,7 +101,7 @@ find_all_except_gitignore() {
 		# also keep stuff matching gitignore patterns in backup.list (negated-ignore in this case, since they are kept)
 		# also keep symlinks as they cost next to nothing to store
 		# need 'sudo' since newer git requires proc user = directory owner
-		find "$src" -xtype d -name .git -execdir sh -c \
+		find "$src" -name .git -execdir sh -c \
 		  'sudo -u $(stat -c %U $PWD) git ls-files -oi --directory --exclude-per-directory=.gitignore '"${args[*]}"' |
 		   { while read f; do test -h "$f" || echo "$PWD/$f"; done; }' \; >> "$tmp"
 		find "$src" -xtype d -name .rsconf-git -execdir sh -c \
@@ -287,15 +287,16 @@ generate_backup_points() {
 	done
 }
 
+# can pass rsnapshot options like -v after $2
 run() {
 	local backup_root="$(get_backup_root "${1-.}")"
 	local backup="$2"
 	local backup_list="$backup_root/backup.list"
-	local level="$3"
+	shift 2
 	set_tmp_prefix "$backup_root" "$backup"
 	rm -f "$TMPDIR/rsconf-$TMP_PREFIX"-* # rm temp files from last time
 	. <(get_backup_part "$backup_list" "$backup" _presync)
-	rsnapshot -c "$backup_root/$backup.conf" "$level"
+	rsnapshot -c "$backup_root/$backup.conf" "$@"
 	test "$level" = "sync" && touch "$backup_root/$backup.sync"
 	. <(get_backup_part "$backup_list" "$backup" _postsync)
 }
